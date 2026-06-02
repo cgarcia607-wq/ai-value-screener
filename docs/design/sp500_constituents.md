@@ -64,6 +64,12 @@ truth**. Reproducibility does not depend on upstream availability.
 - This isolates us from upstream regressions, deletions, or repo
   takedowns. It also makes our results auditable: anyone with the repo
   can reproduce the exact training universe used.
+- **Staleness is intentional.** The frozen copy is deliberately stale —
+  reproducibility takes priority over freshness for this use case. In a
+  production deployment, the upstream-check workflow would gate a CI job
+  that re-validates against the known-events list before promoting a new
+  frozen copy. Until then, "bump the frozen copy" is a deliberate human
+  action.
 
 ## Reconstruction algorithm
 
@@ -146,6 +152,16 @@ on demand via `members_on(date)` without writing to disk.
 **Why dict-encoded strings**: tickers repeat heavily across months;
 dict encoding gives ~10× compression and near-instant `==` filtering.
 
+**Write-time encoding requirement**: write `ticker` and
+`ticker_normalized` columns using explicit pyarrow `dictionary_encode()`
+at parquet write time, not pandas' implicit `category` dtype. Pandas'
+`category` round-trips inconsistently through parquet — it can
+deserialize as plain string and silently discard the encoding benefit.
+Explicit pyarrow encoding survives the round-trip and keeps the on-disk
+representation predictable. This is the kind of detail that bites only
+once someone reads the parquet back into pandas and wonders why
+filtering got slow.
+
 **What is *not* in this output**: weights, shares, market value, sector,
 issuer name. The change-log source does not provide these. Sector
 information comes from the fundamentals provider (Sharadar SF1) where
@@ -177,6 +193,24 @@ The frozen CSV is committed via a `.gitignore` override
 like all of `data/processed/`. The upstream-check artifact is also
 gitignored — it changes with every check and has no reproducibility
 value.
+
+`upstream_check.json` schema:
+
+```json
+{
+  "checked_at": "ISO-8601 UTC timestamp of the check",
+  "upstream_sha256": "SHA256 of the upstream file at check time",
+  "frozen_sha256": "SHA256 recorded for the committed frozen copy",
+  "matches": true,
+  "upstream_url": "URL the check fetched"
+}
+```
+
+`matches` is `true` if the two hashes are equal, `false` if upstream
+has advanced past the frozen copy, and `null` if the check could not
+reach upstream (with an additional `"error"` field describing the
+failure). The freshness check never modifies the frozen CSV — only
+this JSON.
 
 The processed parquet is rebuilt whenever the frozen CSV's hash changes.
 Otherwise it is read directly. Build time is fast (~1 second for ~140
@@ -244,8 +278,14 @@ the same frozen CSV. The frozen copy may lag the live index by up to
 return prediction.
 
 **Pre-2014 data**. Available in the source but out of scope per project
-decision (sparse, possibly biased). Module raises if called with a
-date before 2014-01-01.
+decision (sparse, possibly biased). Module raises `ValueError` if called
+with a date before 2014-01-01. Exact error message:
+
+```
+ValueError: as_of_date {date} is before the supported training window
+(2014-01-01). Pre-2014 source data has sparse coverage and is excluded
+per project decision. See docs/design/sp500_constituents.md.
+```
 
 **Add/drop event precision**. Deferred. The screener doesn't need
 exact add/drop dates. If we later add features like "stocks added in
@@ -274,6 +314,57 @@ are not needed here — there is no flaky network.
   return last-known check result, never block. Stale freshness data is
   acceptable; the frozen copy is the source of truth.
 
+## Public API
+
+```python
+def members_on(as_of_date: dt.date) -> set[str]:
+    """Return S&P 500 membership on `as_of_date`.
+
+    Uses the most recent prior anchor in the frozen change-log CSV.
+    The "stays in until the next snapshot proves otherwise" property
+    follows from the walk-back — see the Option A convention above.
+
+    Raises ValueError for dates before 2014-01-01 with the exact
+    message documented in the Edge cases section.
+    """
+
+
+def build_membership_table(start: dt.date, end: dt.date) -> pa.Table:
+    """Build a long-format pyarrow Table of (as_of_date, ticker) rows.
+
+    Materializes one row per (month-end-business-day, ticker) for
+    months in [start, end]. Tickers are dictionary-encoded via
+    pyarrow.compute.dictionary_encode at write time, not pandas'
+    implicit category dtype. Phase 2.
+    """
+
+
+def load_membership_table() -> pa.Table:
+    """Load the materialized membership parquet.
+
+    Builds it from the frozen CSV if the parquet is missing or if its
+    embedded source_version SHA differs from EXPECTED_SHA256 (i.e.,
+    someone bumped the frozen copy). Phase 2.
+    """
+
+
+def check_upstream_freshness() -> dict:
+    """Compare frozen CSV SHA256 against the latest upstream version.
+
+    Persists result to data/raw/sp500_change_log/upstream_check.json
+    using the schema documented in the Caching section. Never modifies
+    the frozen CSV.
+
+    Network failures log at WARNING and return the last-known result
+    if one exists on disk, or a fresh dict with matches=None and an
+    "error" field if not.
+    """
+```
+
+All four functions are importable from `src.data_sources.sp500_membership`.
+Phase 1 implements `members_on` and `check_upstream_freshness`. Phase 2
+implements `build_membership_table` and `load_membership_table`.
+
 ## Test plan
 
 `tests/test_sp500_membership.py`.
@@ -292,7 +383,10 @@ are not needed here — there is no flaky network.
 - `test_known_event_tsla_addition` — TSLA ∉ membership(2020-12-18),
   TSLA ∈ membership(2020-12-21).
 - `test_known_event_fb_meta_rename` — FB ∈ membership(2022-06-08);
-  META ∈ membership(2022-06-09); FB ∉ membership(2022-06-09).
+  META ∈ membership(2022-06-09); FB ∉ membership(2022-06-09). Comment
+  in the test clarifies that continuity of the *underlying security*
+  across the rename is the returns module's responsibility, not
+  membership's — this test asserts only ticker-level membership.
 - `test_universe_size_sanity` — five random monthly cross-sections all
   have 495-510 tickers.
 - `test_no_duplicate_tickers_within_section` — any cross-section
