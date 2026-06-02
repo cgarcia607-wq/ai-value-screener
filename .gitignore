@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+*.egg-info/
+
+# Data and models
+data/
+models/
+*.csv
+*.parquet
+*.json
+!package.json
+!package-lock.json
+
+# Environment
+.env
+.env.local
+
+# Mac
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
