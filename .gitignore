@@ -7,13 +7,19 @@ venv/
 *.egg-info/
 
 # Data and models
-data/
+data/*
+!data/raw/
+data/raw/*
+!data/raw/sp500_change_log/
 models/
 *.csv
 *.parquet
 *.json
 !package.json
 !package-lock.json
+# Frozen external datasets committed for reproducibility.
+# See docs/design/sp500_constituents.md for rationale.
+!data/raw/sp500_change_log/**
 
 # Environment
 .env
