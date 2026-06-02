@@ -130,10 +130,10 @@ tests/                    # pytest, run on every push via GitHub Actions.
 
 ## Current State (as of handoff)
 
-- v1.0 stock screener works end-to-end but has survivorship bias and uses
-  current-snapshot fundamentals. Treat existing `src/data_ingestion.py`,
-  `src/model_training.py`, `src/dashboard.py` as legacy — to be replaced or
-  heavily refactored.
+- This repo is a clean rebuild. v1.0 of the stock screener lives at
+  github.com/cgarcia607-wq/ml-value-screener for reference only — it has
+  survivorship bias and uses current-snapshot fundamentals, and is not being
+  ported here. Build fresh against the methodology above.
 - No tests yet.
 - No CI yet.
 - No CLAUDE.md hierarchy in subdirectories yet.
