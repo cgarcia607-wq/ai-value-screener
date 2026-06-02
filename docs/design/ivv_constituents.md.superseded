@@ -1,7 +1,9 @@
 # Design: Point-in-time S&P 500 constituents from iShares IVV
 
-**Module**: `src/data_sources/ivv_constituents.py`
-**Status**: Approved, pre-discovery
+> **SUPERSEDED 2026-06-02.** The IVV-via-Wayback approach described below was found to be non-viable during the discovery phase. See [ivv_discovery_findings.md](ivv_discovery_findings.md) for the audit trail and [sp500_constituents.md](sp500_constituents.md) for the current design. This document is retained so future readers can see the full evolution from original plan to discovery to pivot — **do not implement anything from it**.
+
+**Module**: ~~`src/data_sources/ivv_constituents.py`~~ (never built)
+**Status**: ~~Approved, pre-discovery~~ **Superseded**
 **Owner**: Chris Garcia
 **Last updated**: 2026-06-02
 
