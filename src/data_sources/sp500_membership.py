@@ -9,8 +9,11 @@ test enforces all three stay in sync.
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import hashlib
 import logging
+from functools import lru_cache
 from pathlib import Path
 
 import pyarrow as pa
@@ -38,7 +41,21 @@ def members_on(as_of_date: dt.date) -> set[str]:
     Uses the most recent prior anchor in the frozen change-log CSV.
     Raises ValueError for dates before 2014-01-01.
     """
-    raise NotImplementedError
+    if as_of_date < MIN_SUPPORTED_DATE:
+        raise ValueError(
+            f"as_of_date {as_of_date.isoformat()} is before the supported "
+            f"training window (2014-01-01). Pre-2014 source data has sparse "
+            f"coverage and is excluded per project decision. See "
+            f"docs/design/sp500_constituents.md."
+        )
+    rows = _load_frozen_csv()
+    for row_date, tickers in reversed(rows):
+        if row_date <= as_of_date:
+            return set(tickers)
+    raise RuntimeError(
+        f"No anchor row at or before {as_of_date.isoformat()}. Source CSV "
+        f"may be corrupted; first row is {rows[0][0].isoformat()}."
+    )
 
 
 def build_membership_table(start: dt.date, end: dt.date) -> pa.Table:
@@ -54,3 +71,43 @@ def load_membership_table() -> pa.Table:
 def check_upstream_freshness() -> dict:
     """Compare frozen CSV SHA256 against the latest upstream version."""
     raise NotImplementedError
+
+
+@lru_cache(maxsize=1)
+def _load_frozen_csv() -> tuple[tuple[dt.date, frozenset[str]], ...]:
+    """Load and parse the frozen change-log CSV.
+
+    Verifies SHA256 against EXPECTED_SHA256 at first call. Returns rows
+    sorted by date ascending. Cached for the process lifetime — the
+    frozen CSV is immutable by design.
+    """
+    if not FROZEN_CSV_PATH.exists():
+        raise FileNotFoundError(
+            f"Frozen CSV missing at {FROZEN_CSV_PATH}. See "
+            f"{FROZEN_DIR / 'README.md'} for retrieval instructions."
+        )
+    actual = _sha256_of_file(FROZEN_CSV_PATH)
+    if actual != EXPECTED_SHA256:
+        raise ValueError(
+            f"Frozen CSV hash mismatch. Expected {EXPECTED_SHA256}, got "
+            f"{actual}. The file at {FROZEN_CSV_PATH} was modified outside "
+            f"the documented retrieval flow. See {FROZEN_DIR / 'README.md'} "
+            f"for the update process."
+        )
+    rows: list[tuple[dt.date, frozenset[str]]] = []
+    with FROZEN_CSV_PATH.open(newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            row_date = dt.date.fromisoformat(r["date"])
+            tickers = frozenset(r["tickers"].split(","))
+            rows.append((row_date, tickers))
+    rows.sort(key=lambda x: x[0])
+    return tuple(rows)
+
+
+def _sha256_of_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
