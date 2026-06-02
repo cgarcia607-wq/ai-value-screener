@@ -20,8 +20,10 @@ Both surface through a single Streamlit dashboard.
 ```
 src/
   data_sources/
-    ivv_constituents.py   # Point-in-time S&P 500 membership from iShares IVV
-                          # holdings (Wayback Machine archive).
+    sp500_membership.py   # Point-in-time S&P 500 membership reconstructed
+                          # from a dated change log (frozen copy at
+                          # data/raw/sp500_change_log/). See
+                          # docs/design/sp500_constituents.md.
     fred_client.py        # Cached FRED API wrapper for macro/credit series.
     market_client.py      # yfinance wrappers — PRICES ONLY, not fundamentals.
     shiller_client.py     # CAPE ratio from shillerdata.com.
@@ -49,8 +51,12 @@ tests/                    # pytest, run on every push via GitHub Actions.
 
 ### Stock screener
 - **Survivorship bias**: training data MUST use point-in-time S&P 500
-  constituents from the IVV scraper. Never `pd.read_html` the current Wikipedia
-  roster for training data.
+  constituents reconstructed from a dated change log (frozen copy committed
+  at `data/raw/sp500_change_log/`), validated against known index events
+  using S&P-effective dates. Never `pd.read_html` the current Wikipedia
+  roster for training data. See [docs/design/sp500_constituents.md](docs/design/sp500_constituents.md)
+  for full methodology and [docs/design/ivv_discovery_findings.md](docs/design/ivv_discovery_findings.md)
+  for why the original IVV-Wayback approach was abandoned.
 - **Look-ahead bias**: fundamentals MUST be as-of the prediction date, never
   the current snapshot. yfinance is acceptable for prices, NEVER for
   fundamentals in training.
@@ -84,12 +90,12 @@ tests/                    # pytest, run on every push via GitHub Actions.
 
 | Data | Source | Cost | Notes |
 |------|--------|------|-------|
-| S&P 500 constituents (point-in-time) | iShares IVV via Wayback Machine | Free | Build the scraper. Verify against known events (SVB removal Mar 2023). |
+| S&P 500 constituents (point-in-time) | fja05680/sp500 change log, frozen copy at `data/raw/sp500_change_log/` | Free | Reconstruct membership by walking the log. Validate against known events using S&P-effective dates (SIVB removed 2023-03-15, FRC removed 2023-05-04). |
 | Macro/credit series | FRED API (`fredapi`) | Free | Primary source for ~70% of regime features. |
 | Equity prices | yfinance | Free | Acceptable here. Cache aggressively. |
 | Shiller CAPE | shillerdata.com / GitHub mirror | Free | Monthly. |
 | Point-in-time fundamentals | TBD — Sharadar SF1 (~$50/mo) preferred | Paid | DO NOT use yfinance for this. |
-| Market breadth | Computed from IVV constituents | Free | Reuses constituents work. |
+| Market breadth | Computed from change-log-derived membership + prices | Free | Reuses constituents work. |
 
 ## Conventions
 
@@ -114,8 +120,15 @@ tests/                    # pytest, run on every push via GitHub Actions.
 - Do not use `yfinance` for fundamentals in training data. It returns current
   snapshots, which causes look-ahead bias.
 - Do not use `train_test_split` or `KFold` on time series. Walk-forward only.
-- Do not use `pd.read_html` on Wikipedia for the constituent list outside of
-  the current-snapshot inference path. Training data uses the IVV scraper.
+- Do not use `pd.read_html` on Wikipedia for the constituent list. Training
+  and inference both use the change-log reconstruction; see
+  [docs/design/sp500_constituents.md](docs/design/sp500_constituents.md).
+- Do not introduce any S&P 500 membership source that has not been validated
+  against the known-events list (SIVB, FRC, TSLA, FB→META) using
+  **S&P-effective dates**, not news-salient event dates. The distinction
+  matters: SVB was closed by FDIC on 2023-03-10 but removed from the index
+  effective 2023-03-15; using the earlier date silently corrupts the
+  training universe.
 - Do not predict binary "crash / no crash". Predict regime distribution or
   forward volatility magnitude.
 - Do not use raw `feature_importances_` from XGBoost in user-facing output.
@@ -145,8 +158,10 @@ tests/                    # pytest, run on every push via GitHub Actions.
 
 ## Next Up
 
-1. Build `src/data_sources/ivv_constituents.py` — Wayback Machine scraper for
-   point-in-time S&P 500 membership. Validate against known events.
+1. Build `src/data_sources/sp500_membership.py` — point-in-time S&P 500
+   membership reconstructed from the frozen change log at
+   `data/raw/sp500_change_log/`. Validate against known events using
+   S&P-effective dates. See [docs/design/sp500_constituents.md](docs/design/sp500_constituents.md).
 2. Build `src/data_sources/fred_client.py` — cached FRED wrapper for the
    macro/credit series listed in design notes.
 3. Build `src/validation/walk_forward.py` — expanding-window CV with embargo.
