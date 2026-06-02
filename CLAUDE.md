@@ -125,8 +125,13 @@ tests/                    # pytest, run on every push via GitHub Actions.
 - Do not commit `data/`, `models/`, `venv/`, `.env`, or `.DS_Store`. Check
   `.gitignore` before adding files.
 - Do not add Tableau or FastAPI scaffolding. Streamlit + Plotly is sufficient.
-- Do not silently catch exceptions in data clients. Log and re-raise, or fail
-  loudly. Silent failures in financial data pipelines are dangerous.
+- Do not silently catch exceptions in data clients. Silent failures in
+  financial data pipelines are dangerous. The rule targets *silent*
+  failures specifically — acceptable patterns are: (a) log at WARNING+
+  and re-raise, or (b) for batch operations, log loudly, persist the
+  failure to a manifest, and hard-fail when aggregate failures exceed
+  a documented threshold. Never swallow an exception without leaving a
+  paper trail.
 
 ## Current State (as of handoff)
 
