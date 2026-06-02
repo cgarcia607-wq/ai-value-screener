@@ -16,6 +16,7 @@ from src.data_sources.sp500_membership import (
     EXPECTED_SHA256,
     FROZEN_CSV_PATH,
     FROZEN_DIR,
+    check_upstream_freshness,
     members_on,
 )
 
@@ -101,3 +102,23 @@ def test_known_event_fb_meta_rename():
     assert "FB" in members_on(dt.date(2022, 6, 8))
     assert "META" in members_on(dt.date(2022, 6, 9))
     assert "FB" not in members_on(dt.date(2022, 6, 9))
+
+
+@pytest.mark.slow
+def test_upstream_freshness_check_returns_status():
+    """End-to-end network call to fja05680 upstream.
+
+    Skipped in CI (slow marker excluded via pytest -m "not slow"). Run
+    locally with `pytest -m slow`.
+    """
+    result = check_upstream_freshness()
+    assert result["frozen_sha256"] == EXPECTED_SHA256
+    assert result["upstream_url"] == (
+        "https://raw.githubusercontent.com/fja05680/sp500/master/"
+        "S%26P%20500%20Historical%20Components%20%26%20Changes(01-17-2026).csv"
+    )
+    assert "checked_at" in result
+    # Assuming the test environment has network: upstream_sha should be
+    # present and matches should be a concrete bool (not None).
+    assert result["upstream_sha256"] is not None
+    assert result["matches"] in (True, False)

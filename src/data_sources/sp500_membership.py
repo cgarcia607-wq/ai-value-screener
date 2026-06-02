@@ -12,7 +12,10 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import hashlib
+import json
 import logging
+import urllib.error
+import urllib.request
 from functools import lru_cache
 from pathlib import Path
 
@@ -69,8 +72,55 @@ def load_membership_table() -> pa.Table:
 
 
 def check_upstream_freshness() -> dict:
-    """Compare frozen CSV SHA256 against the latest upstream version."""
-    raise NotImplementedError
+    """Compare frozen CSV SHA256 against the latest upstream version.
+
+    Persists result to data/raw/sp500_change_log/upstream_check.json using
+    the schema in docs/design/sp500_constituents.md. Never modifies the
+    frozen CSV.
+
+    Network failures log at WARNING and return the last-known result from
+    disk if one exists, or a fresh dict with matches=None and an "error"
+    field if not.
+    """
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    req = urllib.request.Request(
+        UPSTREAM_URL,
+        headers={
+            "User-Agent": (
+                "ai-value-screener "
+                "(+https://github.com/cgarcia607-wq/ai-value-screener)"
+            ),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+            content = resp.read()
+    except (urllib.error.URLError, TimeoutError) as e:
+        logger.warning(
+            "Upstream freshness check failed: %s. Returning last-known result.",
+            e,
+        )
+        if UPSTREAM_CHECK_PATH.exists():
+            return json.loads(UPSTREAM_CHECK_PATH.read_text())
+        return {
+            "checked_at": now,
+            "upstream_sha256": None,
+            "frozen_sha256": EXPECTED_SHA256,
+            "matches": None,
+            "upstream_url": UPSTREAM_URL,
+            "error": str(e),
+        }
+
+    upstream_sha = hashlib.sha256(content).hexdigest()
+    result = {
+        "checked_at": now,
+        "upstream_sha256": upstream_sha,
+        "frozen_sha256": EXPECTED_SHA256,
+        "matches": upstream_sha == EXPECTED_SHA256,
+        "upstream_url": UPSTREAM_URL,
+    }
+    UPSTREAM_CHECK_PATH.write_text(json.dumps(result, indent=2) + "\n")
+    return result
 
 
 @lru_cache(maxsize=1)

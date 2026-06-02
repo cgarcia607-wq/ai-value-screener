@@ -20,6 +20,9 @@ models/
 # Frozen external datasets committed for reproducibility.
 # See docs/design/sp500_constituents.md for rationale.
 !data/raw/sp500_change_log/**
+# But not the runtime freshness-check artifact — it has no
+# reproducibility value and changes every check.
+data/raw/sp500_change_log/upstream_check.json
 
 # Environment
 .env
