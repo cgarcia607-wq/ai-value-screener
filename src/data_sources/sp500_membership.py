@@ -1,0 +1,56 @@
+"""Point-in-time S&P 500 membership via change-log reconstruction.
+
+See docs/design/sp500_constituents.md for the full design.
+
+When bumping the frozen CSV, update FROZEN_CSV_FILENAME, EXPECTED_SHA256,
+and data/raw/sp500_change_log/README.md together. The hash-consistency
+test enforces all three stay in sync.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import logging
+from pathlib import Path
+
+import pyarrow as pa
+
+logger = logging.getLogger(__name__)
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+FROZEN_DIR = _REPO_ROOT / "data" / "raw" / "sp500_change_log"
+FROZEN_CSV_FILENAME = "S&P 500 Historical Components & Changes(01-17-2026).csv"
+FROZEN_CSV_PATH = FROZEN_DIR / FROZEN_CSV_FILENAME
+EXPECTED_SHA256 = "711bf3b5f21e25ad76456a19df7632eab6543cf3b2b9c51ab210bb012054a7f6"
+
+UPSTREAM_URL = (
+    "https://raw.githubusercontent.com/fja05680/sp500/master/"
+    "S%26P%20500%20Historical%20Components%20%26%20Changes(01-17-2026).csv"
+)
+UPSTREAM_CHECK_PATH = FROZEN_DIR / "upstream_check.json"
+
+MIN_SUPPORTED_DATE = dt.date(2014, 1, 1)
+
+
+def members_on(as_of_date: dt.date) -> set[str]:
+    """Return S&P 500 membership on `as_of_date`.
+
+    Uses the most recent prior anchor in the frozen change-log CSV.
+    Raises ValueError for dates before 2014-01-01.
+    """
+    raise NotImplementedError
+
+
+def build_membership_table(start: dt.date, end: dt.date) -> pa.Table:
+    """Build a long-format pyarrow Table of (as_of_date, ticker) rows. Phase 2."""
+    raise NotImplementedError
+
+
+def load_membership_table() -> pa.Table:
+    """Load the materialized membership parquet, building if missing. Phase 2."""
+    raise NotImplementedError
+
+
+def check_upstream_freshness() -> dict:
+    """Compare frozen CSV SHA256 against the latest upstream version."""
+    raise NotImplementedError
