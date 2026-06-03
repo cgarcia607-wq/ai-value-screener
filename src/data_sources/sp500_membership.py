@@ -14,12 +14,11 @@ import datetime as dt
 import hashlib
 import json
 import logging
-import urllib.error
-import urllib.request
 from functools import lru_cache
 from pathlib import Path
 
 import pyarrow as pa
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -83,19 +82,17 @@ def check_upstream_freshness() -> dict:
     field if not.
     """
     now = dt.datetime.now(dt.timezone.utc).isoformat()
-    req = urllib.request.Request(
-        UPSTREAM_URL,
-        headers={
-            "User-Agent": (
-                "ai-value-screener "
-                "(+https://github.com/cgarcia607-wq/ai-value-screener)"
-            ),
-        },
-    )
+    headers = {
+        "User-Agent": (
+            "ai-value-screener "
+            "(+https://github.com/cgarcia607-wq/ai-value-screener)"
+        ),
+    }
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-            content = resp.read()
-    except (urllib.error.URLError, TimeoutError) as e:
+        resp = requests.get(UPSTREAM_URL, headers=headers, timeout=30)
+        resp.raise_for_status()
+        content = resp.content
+    except requests.exceptions.RequestException as e:
         logger.warning(
             "Upstream freshness check failed: %s. Returning last-known result.",
             e,
