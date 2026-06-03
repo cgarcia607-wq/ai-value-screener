@@ -46,10 +46,47 @@ MIN_SUPPORTED_DATE = dt.date(2014, 1, 1)
 # ticker; value is a chronological list of (effective_date, new_ticker)
 # entries so multi-hop chains stay representable in the future.
 #
+# Only pure corporate rebrand / ticker-change events belong here. Mergers,
+# spinoffs, and other corporate restructurings are NOT renames — the
+# pre- and post-event securities describe different entities and should
+# be treated as separate tickers in training data.
+#
 # Dual-class shares (GOOG/GOOGL, FOXA/FOX, NWSA/NWS) are NOT renames
 # and must never be collapsed — both classes remain separate tickers.
+#
+# Explicitly excluded (corporate actions, not renames):
+#   - MYL -> VTRS (2020-11-17): Mylan + Upjohn (a Pfizer carve-out)
+#     combined to form Viatris. Pre- and post-combination fundamentals
+#     describe different entities; treating this as a rename would
+#     conflate them.
+#   - UTX -> RTX (2020-04-03): United Technologies rebranded to
+#     Raytheon Technologies on the same day it spun off Carrier (CARR)
+#     and Otis (OTIS). The source row shows RTX,OTIS,CARR added with
+#     UTX removed; this is a 1:3 corporate split, not a 1:1 rename.
+#
+# TODO: investigate FISV/FI reversal on 2025-11-11. The source shows
+# FISV re-added and FI removed, despite Fiserv having moved FISV -> FI
+# on 2023-06-07. Could be a Fiserv ticker reversal, a different
+# security claiming the FI symbol, or a source-data error. Tracked at
+# https://github.com/cgarcia607-wq/ai-value-screener/issues/1.
+# Until resolved, no FI <-> FISV entries are included in either
+# direction.
 RENAMES: dict[str, list[tuple[dt.date, str]]] = {
-    "FB": [(dt.date(2022, 6, 9), "META")],
+    "BHGE": [(dt.date(2019, 10, 18), "BKR")],   # Baker Hughes independent rebrand
+    "CTL":  [(dt.date(2020, 9, 18),  "LUMN")],  # CenturyLink -> Lumen Technologies
+    "WLTW": [(dt.date(2022, 1, 10),  "WTW")],   # Willis Towers Watson ticker simplification
+    "VIAC": [(dt.date(2022, 2, 17),  "PARA")],  # ViacomCBS -> Paramount Global
+    "BLL":  [(dt.date(2022, 5, 10),  "BALL")],  # Ball Corp ticker change
+    "FB":   [(dt.date(2022, 6, 9),   "META")],  # Facebook -> Meta
+    "ANTM": [(dt.date(2022, 6, 28),  "ELV")],   # Anthem -> Elevance Health
+    "NLOK": [(dt.date(2022, 11, 8),  "GEN")],   # NortonLifeLock -> Gen Digital
+    # FISV -> FI (2023-06-07) is DEFERRED. See the TODO above the table —
+    # the 2025-11-11 reversal pattern is unresolved (issue #1), and
+    # normalizing FISV -> FI now would silently misrepresent the
+    # post-2025 source data which is back to FISV.
+    "ABC":  [(dt.date(2023, 8, 30),  "COR")],   # AmerisourceBergen -> Cencora
+    "CDAY": [(dt.date(2024, 2, 1),   "DAY")],   # Ceridian -> Dayforce
+    "FLT":  [(dt.date(2024, 3, 25),  "CPAY")],  # FleetCor -> Corpay
 }
 
 

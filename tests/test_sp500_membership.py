@@ -133,6 +133,23 @@ def test_normalize_ticker_handles_known_renames():
     assert _normalize_ticker("FB", dt.date(2022, 6, 8)) == "FB"
     assert _normalize_ticker("FB", dt.date(2022, 6, 9)) == "META"
     assert _normalize_ticker("FB", dt.date(2024, 1, 1)) == "META"
+
+    # Spot-check three additional renames spanning the 2019-2024 window
+    # to guard against off-by-one or wrong-direction bugs in the
+    # _normalize_ticker walk. Full RENAMES table is in the module.
+
+    # BHGE -> BKR effective 2019-10-18 (Baker Hughes rebrand).
+    assert _normalize_ticker("BHGE", dt.date(2019, 10, 17)) == "BHGE"
+    assert _normalize_ticker("BHGE", dt.date(2019, 10, 18)) == "BKR"
+
+    # VIAC -> PARA effective 2022-02-17 (ViacomCBS -> Paramount Global).
+    assert _normalize_ticker("VIAC", dt.date(2022, 2, 16)) == "VIAC"
+    assert _normalize_ticker("VIAC", dt.date(2022, 2, 17)) == "PARA"
+
+    # ABC -> COR effective 2023-08-30 (AmerisourceBergen -> Cencora).
+    assert _normalize_ticker("ABC", dt.date(2023, 8, 29)) == "ABC"
+    assert _normalize_ticker("ABC", dt.date(2023, 8, 30)) == "COR"
+
     # Already-current tickers pass through unchanged.
     assert _normalize_ticker("META", dt.date(2024, 1, 1)) == "META"
     # Tickers not in RENAMES pass through.
