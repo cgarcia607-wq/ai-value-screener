@@ -59,9 +59,9 @@ the key was rotated or typo'd.
 
 ## Series inventory
 
-**22 features + USREC ground truth.** Sized to cover the four-regime
+**20 features + USREC ground truth.** Sized to cover the four-regime
 taxonomy without overfitting on macro signals — at ~400 monthly
-observations spanning 1990-present, even 22 features is aggressive
+observations spanning 1990-present, even 20 features is aggressive
 and will need regularization.
 
 ### Yield curve (rate spreads — recession leading indicator)
@@ -248,7 +248,7 @@ monthly average, though the M-frequency FRED series already does this
 internally — included as an example of where override would be useful
 if we ever switch to `DFF` daily).
 
-The default for all 22 series above is `"resample": "last"` (as-of).
+The default for all 20 series above is `"resample": "last"` (as-of).
 
 ## Caching strategy
 
@@ -489,7 +489,7 @@ historical record (which are rare for these series but possible).
 
 ## Open questions
 
-1. **Exact series list — resolved.** Final inventory is 22 features
+1. **Exact series list — resolved.** Final inventory is 20 features
    plus USREC ground truth, with `DCOILWTICO` (WTI crude) added to
    the market-internals category for commodity / inflation
    transmission signal. International series and additional
@@ -525,7 +525,7 @@ historical record (which are rare for these series but possible).
    library is thin enough to swap if it goes unmaintained, and we
    get DataFrame parsing for free.
 
-6. **Cache size.** ~22 series × (1 latest + ~10 vintage dates from CV
+6. **Cache size.** ~20 series × (1 latest + ~10 vintage dates from CV
    folds) × monthly resolution × 35 years = ~250 small parquet files
    totaling a few MB. Negligible.
 
