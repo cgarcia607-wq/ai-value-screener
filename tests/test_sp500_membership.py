@@ -20,6 +20,7 @@ from src.data_sources.sp500_membership import (
     FROZEN_CSV_PATH,
     FROZEN_DIR,
     _load_frozen_csv,
+    _members_on_rows,
     _normalize_ticker,
     build_membership_table,
     check_upstream_freshness,
@@ -196,6 +197,26 @@ def test_materialized_parquet_uses_dict_encoding(tmp_path):
             f"Column {col} is not dict-encoded after parquet round-trip: "
             f"got {field_type}"
         )
+
+
+def test_derived_event_uses_later_snapshot_date():
+    # Option A: derived removal dated to the LATER snapshot. When ticker
+    # X is in snapshot t1 but not in snapshot t2, membership queries for
+    # dates in [t1, t2) return X (anchor = t1, the earlier snapshot),
+    # and only on t2 does X disappear. This is conservative on
+    # look-ahead bias — never claims removal before it actually
+    # happened. See docs/design/sp500_constituents.md for the rationale.
+    rows = (
+        (dt.date(2016, 5, 10), frozenset({"AAPL", "MSFT", "X"})),
+        (dt.date(2016, 5, 17), frozenset({"AAPL", "MSFT"})),
+    )
+    # Between snapshots: X still in (anchored to 2016-05-10).
+    assert "X" in _members_on_rows(dt.date(2016, 5, 14), rows)
+    assert "X" in _members_on_rows(dt.date(2016, 5, 16), rows)
+    # On the later snapshot: X is out (anchored to 2016-05-17, the
+    # derived effective removal date).
+    assert "X" not in _members_on_rows(dt.date(2016, 5, 17), rows)
+    assert "X" not in _members_on_rows(dt.date(2016, 5, 20), rows)
 
 
 def test_load_membership_table_builds_if_missing(tmp_path, monkeypatch):

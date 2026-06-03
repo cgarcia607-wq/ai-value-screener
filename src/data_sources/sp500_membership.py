@@ -66,7 +66,19 @@ def members_on(as_of_date: dt.date) -> set[str]:
             f"coverage and is excluded per project decision. See "
             f"docs/design/sp500_constituents.md."
         )
-    rows = _load_frozen_csv()
+    return _members_on_rows(as_of_date, _load_frozen_csv())
+
+
+def _members_on_rows(
+    as_of_date: dt.date,
+    rows: tuple[tuple[dt.date, frozenset[str]], ...],
+) -> set[str]:
+    """Core membership lookup: walk rows in reverse to nearest prior anchor.
+
+    Factored out for synthetic-data testability — the
+    derived-event-date convention test (Option A) needs to query
+    against in-memory snapshot pairs without touching the frozen CSV.
+    """
     for row_date, tickers in reversed(rows):
         if row_date <= as_of_date:
             return set(tickers)
