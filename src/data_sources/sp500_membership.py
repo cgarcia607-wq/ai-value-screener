@@ -148,7 +148,19 @@ def _load_frozen_csv() -> tuple[tuple[dt.date, frozenset[str]], ...]:
             row_date = dt.date.fromisoformat(r["date"])
             tickers = frozenset(r["tickers"].split(","))
             rows.append((row_date, tickers))
-    rows.sort(key=lambda x: x[0])
+    # Algorithmic invariant: source rows must be strictly increasing by
+    # date. members_on() walks the rows in reverse to find the nearest
+    # prior anchor; a future bisect-based optimization will rely on the
+    # same property. Silently sorting would mask upstream regressions, so
+    # we verify and hard-fail instead.
+    for i in range(1, len(rows)):
+        if rows[i][0] <= rows[i - 1][0]:
+            raise ValueError(
+                f"Frozen CSV is not strictly monotonic-increasing by date: "
+                f"row {i} date {rows[i][0]} <= row {i - 1} date "
+                f"{rows[i - 1][0]}. The source file is corrupted or upstream "
+                f"has regressed. See docs/design/sp500_constituents.md."
+            )
     return tuple(rows)
 
 

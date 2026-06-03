@@ -16,6 +16,7 @@ from src.data_sources.sp500_membership import (
     EXPECTED_SHA256,
     FROZEN_CSV_PATH,
     FROZEN_DIR,
+    _load_frozen_csv,
     check_upstream_freshness,
     members_on,
 )
@@ -27,6 +28,22 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def test_frozen_csv_dates_strictly_increasing():
+    """Source rows must be strictly increasing by date.
+
+    members_on() walks the rows in reverse to find the nearest prior
+    anchor. A future bisect-based optimization will rely on the same
+    property. _load_frozen_csv raises at load time if the invariant
+    is violated; this test confirms it holds for the committed file.
+    """
+    rows = _load_frozen_csv()
+    for i in range(1, len(rows)):
+        assert rows[i][0] > rows[i - 1][0], (
+            f"Row {i} date {rows[i][0]} not > row {i - 1} date "
+            f"{rows[i - 1][0]}"
+        )
 
 
 def test_frozen_csv_hash_consistency():
