@@ -12,12 +12,16 @@ from pathlib import Path
 
 import pytest
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 from src.data_sources.sp500_membership import (
     EXPECTED_SHA256,
     FROZEN_CSV_PATH,
     FROZEN_DIR,
     _load_frozen_csv,
     _normalize_ticker,
+    build_membership_table,
     check_upstream_freshness,
     members_on,
 )
@@ -138,6 +142,59 @@ def test_normalize_ticker_preserves_dual_class():
     d = dt.date(2024, 6, 30)
     for ticker in ("GOOG", "GOOGL", "FOXA", "FOX", "NWSA", "NWS"):
         assert _normalize_ticker(ticker, d) == ticker
+
+
+def test_universe_size_sanity():
+    """Sampled monthly cross-sections all fall in the 495-510 range."""
+    samples = [
+        dt.date(2014, 1, 31),
+        dt.date(2017, 5, 31),
+        dt.date(2020, 6, 30),
+        dt.date(2022, 12, 30),  # 2022-12-31 was Saturday
+        dt.date(2024, 9, 30),
+    ]
+    for d in samples:
+        size = len(members_on(d))
+        assert 495 <= size <= 510, f"membership on {d}: {size} (expected 495-510)"
+
+
+def test_no_duplicate_tickers_within_section():
+    """Each as_of_date in the built table has unique ticker_normalized."""
+    table = build_membership_table(dt.date(2024, 1, 1), dt.date(2024, 6, 30))
+    df = table.to_pandas()
+    for d, group in df.groupby("as_of_date"):
+        assert group["ticker_normalized"].nunique() == len(group), (
+            f"duplicate ticker_normalized on {d}"
+        )
+
+
+def test_materialized_parquet_primary_key_unique():
+    """(as_of_date, ticker_normalized) is globally unique across the built table."""
+    table = build_membership_table(dt.date(2014, 1, 1), dt.date(2024, 12, 31))
+    dates = table["as_of_date"].to_pylist()
+    tickers = table["ticker_normalized"].to_pylist()
+    pairs = list(zip(dates, tickers))
+    assert len(pairs) == len(set(pairs))
+
+
+def test_materialized_parquet_uses_dict_encoding(tmp_path):
+    """Ticker columns survive parquet round-trip as dictionary-encoded.
+
+    This catches the pandas-`category` gotcha — pandas' implicit category
+    dtype can deserialize as plain string after a parquet round-trip,
+    silently dropping the encoding. Explicit pyarrow dictionary_encode
+    preserves the type.
+    """
+    table = build_membership_table(dt.date(2024, 1, 1), dt.date(2024, 3, 31))
+    path = tmp_path / "test.parquet"
+    pq.write_table(table, path)
+    read_back = pq.read_table(path)
+    for col in ("ticker", "ticker_normalized"):
+        field_type = read_back.schema.field(col).type
+        assert pa.types.is_dictionary(field_type), (
+            f"Column {col} is not dict-encoded after parquet round-trip: "
+            f"got {field_type}"
+        )
 
 
 @pytest.mark.slow

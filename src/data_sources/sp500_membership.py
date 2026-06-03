@@ -9,6 +9,7 @@ test enforces all three stay in sync.
 
 from __future__ import annotations
 
+import calendar
 import csv
 import datetime as dt
 import hashlib
@@ -86,9 +87,66 @@ def _normalize_ticker(ticker: str, as_of_date: dt.date) -> str:
     return ticker
 
 
+def _month_end_business_days(start: dt.date, end: dt.date) -> list[dt.date]:
+    """Last weekday of each calendar month falling within [start, end]."""
+    result: list[dt.date] = []
+    year, month = start.year, start.month
+    while (year, month) <= (end.year, end.month):
+        last_day = calendar.monthrange(year, month)[1]
+        d = dt.date(year, month, last_day)
+        while d.weekday() >= 5:  # Sat=5, Sun=6
+            d -= dt.timedelta(days=1)
+        if start <= d <= end:
+            result.append(d)
+        month += 1
+        if month > 12:
+            year, month = year + 1, 1
+    return result
+
+
 def build_membership_table(start: dt.date, end: dt.date) -> pa.Table:
-    """Build a long-format pyarrow Table of (as_of_date, ticker) rows. Phase 2."""
-    raise NotImplementedError
+    """Build a long-format pyarrow Table of (as_of_date, ticker) rows.
+
+    Materializes one row per (month-end-business-day, ticker) for months
+    in [start, end]. The `ticker` and `ticker_normalized` columns are
+    explicitly dictionary-encoded at construction — see the Output
+    schema section of docs/design/sp500_constituents.md for why we avoid
+    pandas' implicit category dtype here.
+
+    Asserts primary key (as_of_date, ticker_normalized) uniqueness before
+    returning.
+    """
+    dates = _month_end_business_days(start, end)
+    source_version = EXPECTED_SHA256[:12]
+
+    as_of: list[dt.date] = []
+    tickers: list[str] = []
+    normalized: list[str] = []
+    for d in dates:
+        for t in sorted(members_on(d)):
+            as_of.append(d)
+            tickers.append(t)
+            normalized.append(_normalize_ticker(t, d))
+
+    pairs = set(zip(as_of, normalized))
+    if len(pairs) != len(as_of):
+        raise ValueError(
+            f"Primary key (as_of_date, ticker_normalized) is not unique: "
+            f"{len(as_of) - len(pairs)} duplicate rows in built table."
+        )
+
+    return pa.table(
+        {
+            "as_of_date": pa.array(as_of, type=pa.date32()),
+            "ticker": pa.array(tickers, type=pa.string()).dictionary_encode(),
+            "ticker_normalized": pa.array(
+                normalized, type=pa.string()
+            ).dictionary_encode(),
+            "source_version": pa.array(
+                [source_version] * len(as_of), type=pa.string()
+            ).dictionary_encode(),
+        }
+    )
 
 
 def load_membership_table() -> pa.Table:
