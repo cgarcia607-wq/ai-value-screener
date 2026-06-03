@@ -19,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import requests
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,10 @@ UPSTREAM_URL = (
     "S%26P%20500%20Historical%20Components%20%26%20Changes(01-17-2026).csv"
 )
 UPSTREAM_CHECK_PATH = FROZEN_DIR / "upstream_check.json"
+
+PROCESSED_PARQUET_PATH = (
+    _REPO_ROOT / "data" / "processed" / "sp500_membership.parquet"
+)
 
 MIN_SUPPORTED_DATE = dt.date(2014, 1, 1)
 
@@ -150,8 +155,31 @@ def build_membership_table(start: dt.date, end: dt.date) -> pa.Table:
 
 
 def load_membership_table() -> pa.Table:
-    """Load the materialized membership parquet, building if missing. Phase 2."""
-    raise NotImplementedError
+    """Load the materialized membership parquet, building if missing or stale.
+
+    Reads `data/processed/sp500_membership.parquet` if it exists and its
+    `source_version` column matches `EXPECTED_SHA256[:12]` (the current
+    frozen CSV). Otherwise rebuilds over [MIN_SUPPORTED_DATE,
+    last_anchor_date] via build_membership_table and writes the parquet.
+    """
+    expected_version = EXPECTED_SHA256[:12]
+    if PROCESSED_PARQUET_PATH.exists():
+        existing = pq.read_table(PROCESSED_PARQUET_PATH)
+        if len(existing) > 0:
+            existing_version = existing["source_version"][0].as_py()
+            if existing_version == expected_version:
+                return existing
+            logger.info(
+                "Membership parquet source_version %s != current %s; "
+                "rebuilding.",
+                existing_version,
+                expected_version,
+            )
+    rows = _load_frozen_csv()
+    table = build_membership_table(MIN_SUPPORTED_DATE, rows[-1][0])
+    PROCESSED_PARQUET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, PROCESSED_PARQUET_PATH)
+    return table
 
 
 def check_upstream_freshness() -> dict:

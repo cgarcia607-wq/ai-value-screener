@@ -23,6 +23,7 @@ from src.data_sources.sp500_membership import (
     _normalize_ticker,
     build_membership_table,
     check_upstream_freshness,
+    load_membership_table,
     members_on,
 )
 
@@ -195,6 +196,48 @@ def test_materialized_parquet_uses_dict_encoding(tmp_path):
             f"Column {col} is not dict-encoded after parquet round-trip: "
             f"got {field_type}"
         )
+
+
+def test_load_membership_table_builds_if_missing(tmp_path, monkeypatch):
+    """Parquet absent on disk -> build, write, return."""
+    parquet_path = tmp_path / "sp500.parquet"
+    monkeypatch.setattr(
+        "src.data_sources.sp500_membership.PROCESSED_PARQUET_PATH",
+        parquet_path,
+    )
+    table = load_membership_table()
+    assert parquet_path.exists()
+    assert len(table) > 0
+    # source_version stamp matches the current frozen CSV.
+    assert set(table["source_version"].to_pylist()) == {EXPECTED_SHA256[:12]}
+
+
+def test_load_membership_table_rebuilds_on_version_mismatch(tmp_path, monkeypatch):
+    """Parquet exists but source_version differs -> rebuild and overwrite."""
+    parquet_path = tmp_path / "sp500.parquet"
+    monkeypatch.setattr(
+        "src.data_sources.sp500_membership.PROCESSED_PARQUET_PATH",
+        parquet_path,
+    )
+    # Plant a stub parquet with a fake source_version.
+    stub = pa.table(
+        {
+            "as_of_date": pa.array([dt.date(2014, 1, 31)], type=pa.date32()),
+            "ticker": pa.array(["AAPL"], type=pa.string()).dictionary_encode(),
+            "ticker_normalized": pa.array(
+                ["AAPL"], type=pa.string()
+            ).dictionary_encode(),
+            "source_version": pa.array(
+                ["deadbeefcafe"], type=pa.string()
+            ).dictionary_encode(),
+        }
+    )
+    pq.write_table(stub, parquet_path)
+
+    table = load_membership_table()
+    # Rebuilt: now has many rows and the real source_version.
+    assert len(table) > 1
+    assert set(table["source_version"].to_pylist()) == {EXPECTED_SHA256[:12]}
 
 
 @pytest.mark.slow
