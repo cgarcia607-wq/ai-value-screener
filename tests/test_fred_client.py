@@ -5,20 +5,25 @@ Unit tests mock the Fred client; integration tests are marked
 @pytest.mark.slow and skipped in CI.
 """
 
+import datetime as dt
+import os
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 
 from src.data_sources.fred_client import (
+    LATEST_TTL,
     REGIME_SERIES,
     _MISSING_KEY_MESSAGE,
     _reset_client_for_testing,
+    get_series,
     validate_api_key,
 )
 
 
 @pytest.fixture(autouse=True)
-def _reset_state(monkeypatch):
+def _reset_state(monkeypatch, tmp_path):
     """Reset the lazy Fred client between tests so env changes take effect.
 
     Sets FRED_API_KEY to an empty string by default (rather than deleting
@@ -26,11 +31,31 @@ def _reset_state(monkeypatch):
     re-inject any value present in .env. Empty-string + load_dotenv's
     default override=False keeps the empty value sticky, matching the
     "missing key" condition we want to test against.
+
+    Also redirects CACHE_DIR to a per-test tmp_path so cache writes
+    during tests don't pollute data/raw/fred/.
     """
     _reset_client_for_testing()
     monkeypatch.setenv("FRED_API_KEY", "")
+    monkeypatch.setattr(
+        "src.data_sources.fred_client.CACHE_DIR", tmp_path / "fred_cache"
+    )
     yield
     _reset_client_for_testing()
+
+
+def _install_mock_client(monkeypatch, fred_mock: MagicMock) -> None:
+    """Helper: install a MagicMock as the cached Fred client, bypassing auth."""
+    monkeypatch.setenv("FRED_API_KEY", "fake-key-for-test")
+    monkeypatch.setattr("src.data_sources.fred_client._fred_client", fred_mock)
+
+
+def _make_series(values: dict[str, float]) -> pd.Series:
+    """Build a pd.Series with DatetimeIndex from {ISO date: value} dict."""
+    return pd.Series(
+        list(values.values()),
+        index=pd.to_datetime(list(values.keys())),
+    )
 
 
 def test_regime_series_inventory_shape():
@@ -104,3 +129,149 @@ def test_validate_api_key_probe_non_auth_error_propagates(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Network unreachable"):
         validate_api_key(probe=True)
+
+
+# ---------- get_series -----------------------------------------------------
+
+
+def test_get_series_latest_passes_no_realtime_params(monkeypatch):
+    """Latest queries (vintage_date=None) must not pass realtime_*."""
+    fred = MagicMock()
+    fred.get_series.return_value = _make_series({"2024-01-01": 4.0})
+    _install_mock_client(monkeypatch, fred)
+
+    get_series("UNRATE", start=dt.date(2024, 1, 1), end=dt.date(2024, 1, 31))
+
+    fred.get_series.assert_called_once()
+    kwargs = fred.get_series.call_args.kwargs
+    assert kwargs.get("observation_start") == "2024-01-01"
+    assert kwargs.get("observation_end") == "2024-01-31"
+    assert "realtime_start" not in kwargs
+    assert "realtime_end" not in kwargs
+
+
+def test_get_series_with_vintage_sets_both_realtime_params(monkeypatch):
+    """Vintage queries set realtime_start AND realtime_end to the SAME date.
+
+    Setting only realtime_end returns cumulative revision history, which
+    is not the point-in-time snapshot we need to prevent look-ahead bias.
+    See docs/design/fred_client.md "Vintage handling".
+    """
+    fred = MagicMock()
+    fred.get_series.return_value = _make_series({"2018-01-01": 4.1})
+    _install_mock_client(monkeypatch, fred)
+
+    get_series(
+        "UNRATE",
+        start=dt.date(2018, 1, 1),
+        end=dt.date(2018, 12, 31),
+        vintage_date=dt.date(2018, 12, 31),
+    )
+
+    kwargs = fred.get_series.call_args.kwargs
+    assert kwargs.get("realtime_start") == "2018-12-31"
+    assert kwargs.get("realtime_end") == "2018-12-31"
+    assert kwargs["realtime_start"] == kwargs["realtime_end"]
+
+
+def test_get_series_unknown_id_raises_clear_error(monkeypatch):
+    """FRED 'does not exist' translates to ValueError naming the bad ID."""
+    fred = MagicMock()
+    fred.get_series.side_effect = ValueError(
+        "Bad Request. The series does not exist."
+    )
+    _install_mock_client(monkeypatch, fred)
+
+    with pytest.raises(ValueError) as exc:
+        get_series("NOTAREAL")
+    assert "NOTAREAL" in str(exc.value)
+    assert "fred.stlouisfed.org/series/NOTAREAL" in str(exc.value)
+
+
+def test_get_series_empty_range_returns_empty_no_raise(monkeypatch, caplog):
+    """Empty observation range returns empty Series and logs INFO, not WARNING."""
+    fred = MagicMock()
+    fred.get_series.return_value = pd.Series(dtype="float64")
+    _install_mock_client(monkeypatch, fred)
+
+    with caplog.at_level("INFO", logger="src.data_sources.fred_client"):
+        result = get_series("UNRATE")
+    assert result.empty
+    info_records = [r for r in caplog.records if r.levelname == "INFO"]
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("no observations" in r.message for r in info_records)
+    assert not warning_records
+
+
+def test_get_series_missing_at_vintage_returns_empty_with_warning(monkeypatch, caplog):
+    """Empty vintage response returns empty Series and logs WARNING
+    naming series_id and vintage_date. Does not raise.
+
+    Models walk-forward CV requesting a series that hadn't started yet at
+    the fold's vintage (e.g., BAMLH0A0HYM2 before 1997).
+    """
+    fred = MagicMock()
+    fred.get_series.return_value = pd.Series(dtype="float64")
+    _install_mock_client(monkeypatch, fred)
+
+    with caplog.at_level("WARNING", logger="src.data_sources.fred_client"):
+        result = get_series("BAMLH0A0HYM2", vintage_date=dt.date(1995, 6, 30))
+    assert result.empty
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "BAMLH0A0HYM2" in warnings[0].message
+    assert "1995-06-30" in warnings[0].message
+
+
+def test_get_series_caches_latest_then_skips_api(monkeypatch):
+    """Second call to the same latest query should not hit FRED."""
+    fred = MagicMock()
+    fred.get_series.return_value = _make_series({"2024-06-30": 4.0})
+    _install_mock_client(monkeypatch, fred)
+
+    get_series("UNRATE")
+    get_series("UNRATE")
+
+    assert fred.get_series.call_count == 1
+
+
+def test_get_series_latest_cache_expires_after_ttl(monkeypatch):
+    """Latest cache older than LATEST_TTL triggers a fresh fetch."""
+    fred = MagicMock()
+    fred.get_series.return_value = _make_series({"2024-06-30": 4.0})
+    _install_mock_client(monkeypatch, fred)
+
+    get_series("UNRATE")
+    # Backdate the cache file's mtime to >TTL ago.
+    from src.data_sources.fred_client import _cache_path
+
+    path = _cache_path("UNRATE", None)
+    stale = (
+        dt.datetime.now(dt.timezone.utc) - LATEST_TTL - dt.timedelta(hours=1)
+    ).timestamp()
+    os.utime(path, (stale, stale))
+
+    get_series("UNRATE")
+    assert fred.get_series.call_count == 2
+
+
+def test_get_series_vintage_cache_never_expires(monkeypatch):
+    """Vintage cache is used regardless of file age."""
+    fred = MagicMock()
+    fred.get_series.return_value = _make_series({"2018-06-01": 3.9})
+    _install_mock_client(monkeypatch, fred)
+
+    vintage = dt.date(2018, 12, 31)
+    get_series("UNRATE", vintage_date=vintage)
+
+    # Make the cache ancient — way past any TTL we'd ever pick.
+    from src.data_sources.fred_client import _cache_path
+
+    path = _cache_path("UNRATE", vintage)
+    ancient = (
+        dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=365)
+    ).timestamp()
+    os.utime(path, (ancient, ancient))
+
+    get_series("UNRATE", vintage_date=vintage)
+    assert fred.get_series.call_count == 1

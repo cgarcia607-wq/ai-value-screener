@@ -12,6 +12,7 @@ import logging
 import os
 from pathlib import Path
 
+import pandas as pd
 from dotenv import load_dotenv
 from fredapi import Fred
 
@@ -214,6 +215,121 @@ def _reset_client_for_testing() -> None:
     """Test-only: clear the cached Fred client so the env can be re-read."""
     global _fred_client
     _fred_client = None
+
+
+def _cache_path(series_id: str, vintage_date: dt.date | None) -> Path:
+    suffix = f"vintage_{vintage_date.isoformat()}" if vintage_date else "latest"
+    return CACHE_DIR / f"{series_id}__{suffix}.parquet"
+
+
+def _cache_is_fresh(path: Path, vintage_date: dt.date | None) -> bool:
+    """Vintage cache never expires; latest cache expires after LATEST_TTL."""
+    if not path.exists():
+        return False
+    if vintage_date is not None:
+        return True
+    mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc)
+    age = dt.datetime.now(dt.timezone.utc) - mtime
+    return age < LATEST_TTL
+
+
+def _load_cache(path: Path) -> pd.Series:
+    df = pd.read_parquet(path)
+    return df["value"]
+
+
+def _write_cache(path: Path, series: pd.Series) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    series.to_frame("value").to_parquet(path)
+
+
+def _fetch_from_fred(
+    series_id: str,
+    start: dt.date | None,
+    end: dt.date | None,
+    vintage_date: dt.date | None,
+) -> pd.Series:
+    """Build FRED kwargs and delegate to fredapi. Translates errors."""
+    client = _get_fred_client()
+    kwargs: dict[str, str] = {}
+    if start is not None:
+        kwargs["observation_start"] = start.isoformat()
+    if end is not None:
+        kwargs["observation_end"] = end.isoformat()
+    if vintage_date is not None:
+        # BOTH realtime params must equal vintage_date to get the
+        # "as known on date X" point-in-time snapshot. realtime_end alone
+        # returns cumulative revision history (multiple rows per
+        # observation). See docs/design/fred_client.md "Vintage handling".
+        v = vintage_date.isoformat()
+        kwargs["realtime_start"] = v
+        kwargs["realtime_end"] = v
+    try:
+        return client.get_series(series_id, **kwargs)
+    except Exception as e:
+        msg = str(e).lower()
+        if "does not exist" in msg or "bad request" in msg:
+            raise ValueError(
+                f"FRED series '{series_id}' not found. Check the series ID "
+                f"in REGIME_SERIES or at "
+                f"https://fred.stlouisfed.org/series/{series_id}."
+            ) from e
+        raise
+
+
+def get_series(
+    series_id: str,
+    start: dt.date | None = None,
+    end: dt.date | None = None,
+    vintage_date: dt.date | None = None,
+) -> pd.Series:
+    """Fetch a single FRED series with optional vintage-aware semantics.
+
+    Args:
+        series_id: FRED series identifier (e.g., "UNRATE").
+        start, end: observation date bounds. None = full history.
+        vintage_date: if set, return values as known on that date
+            (vintage-aware, for training). If None, return latest
+            revisions (for inference).
+
+    Returns:
+        pd.Series indexed by observation date. Empty Series if the
+        series has no observations at the requested vintage / range —
+        does not raise (see error-handling section of design doc).
+
+    Raises:
+        EnvironmentError: if FRED_API_KEY is missing.
+        ValueError: if FRED rejects the series_id.
+    """
+    cache_path = _cache_path(series_id, vintage_date)
+    if _cache_is_fresh(cache_path, vintage_date):
+        series = _load_cache(cache_path)
+    else:
+        series = _fetch_from_fred(series_id, start, end, vintage_date)
+        _write_cache(cache_path, series)
+
+    # Defensive filter — cache may have a wider range than the current call.
+    if start is not None:
+        series = series[series.index >= pd.Timestamp(start)]
+    if end is not None:
+        series = series[series.index <= pd.Timestamp(end)]
+
+    if series.empty:
+        if vintage_date is not None:
+            logger.warning(
+                "FRED series %s has no observations at vintage %s. "
+                "Expected if the series starts after that date.",
+                series_id,
+                vintage_date.isoformat(),
+            )
+        else:
+            logger.info(
+                "FRED series %s returned no observations in range [%s, %s].",
+                series_id,
+                start,
+                end,
+            )
+    return series
 
 
 def validate_api_key(probe: bool = False) -> None:
