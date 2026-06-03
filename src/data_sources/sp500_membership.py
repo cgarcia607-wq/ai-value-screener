@@ -36,6 +36,16 @@ UPSTREAM_CHECK_PATH = FROZEN_DIR / "upstream_check.json"
 
 MIN_SUPPORTED_DATE = dt.date(2014, 1, 1)
 
+# Ticker renames as published by the source. Keyed by the *original*
+# ticker; value is a chronological list of (effective_date, new_ticker)
+# entries so multi-hop chains stay representable in the future.
+#
+# Dual-class shares (GOOG/GOOGL, FOXA/FOX, NWSA/NWS) are NOT renames
+# and must never be collapsed — both classes remain separate tickers.
+RENAMES: dict[str, list[tuple[dt.date, str]]] = {
+    "FB": [(dt.date(2022, 6, 9), "META")],
+}
+
 
 def members_on(as_of_date: dt.date) -> set[str]:
     """Return S&P 500 membership on `as_of_date`.
@@ -58,6 +68,22 @@ def members_on(as_of_date: dt.date) -> set[str]:
         f"No anchor row at or before {as_of_date.isoformat()}. Source CSV "
         f"may be corrupted; first row is {rows[0][0].isoformat()}."
     )
+
+
+def _normalize_ticker(ticker: str, as_of_date: dt.date) -> str:
+    """Apply ticker renames in RENAMES based on as_of_date.
+
+    Walks RENAMES[ticker] history in reverse and returns the latest
+    rename whose effective_date is <= as_of_date. Returns the original
+    ticker if no rename applies (including for tickers not in RENAMES).
+    """
+    history = RENAMES.get(ticker)
+    if not history:
+        return ticker
+    for effective_date, new_ticker in reversed(history):
+        if as_of_date >= effective_date:
+            return new_ticker
+    return ticker
 
 
 def build_membership_table(start: dt.date, end: dt.date) -> pa.Table:

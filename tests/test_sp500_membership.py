@@ -17,6 +17,7 @@ from src.data_sources.sp500_membership import (
     FROZEN_CSV_PATH,
     FROZEN_DIR,
     _load_frozen_csv,
+    _normalize_ticker,
     check_upstream_freshness,
     members_on,
 )
@@ -119,6 +120,24 @@ def test_known_event_fb_meta_rename():
     assert "FB" in members_on(dt.date(2022, 6, 8))
     assert "META" in members_on(dt.date(2022, 6, 9))
     assert "FB" not in members_on(dt.date(2022, 6, 9))
+
+
+def test_normalize_ticker_handles_known_renames():
+    # FB->META rename effective 2022-06-09.
+    assert _normalize_ticker("FB", dt.date(2022, 6, 8)) == "FB"
+    assert _normalize_ticker("FB", dt.date(2022, 6, 9)) == "META"
+    assert _normalize_ticker("FB", dt.date(2024, 1, 1)) == "META"
+    # Already-current tickers pass through unchanged.
+    assert _normalize_ticker("META", dt.date(2024, 1, 1)) == "META"
+    # Tickers not in RENAMES pass through.
+    assert _normalize_ticker("AAPL", dt.date(2024, 1, 1)) == "AAPL"
+
+
+def test_normalize_ticker_preserves_dual_class():
+    # Dual-class shares are not renames and must never be collapsed.
+    d = dt.date(2024, 6, 30)
+    for ticker in ("GOOG", "GOOGL", "FOXA", "FOX", "NWSA", "NWS"):
+        assert _normalize_ticker(ticker, d) == ticker
 
 
 @pytest.mark.slow
