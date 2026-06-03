@@ -275,3 +275,45 @@ def test_get_series_vintage_cache_never_expires(monkeypatch):
 
     get_series("UNRATE", vintage_date=vintage)
     assert fred.get_series.call_count == 1
+
+
+# ---------- Integration (real FRED API, slow) -----------------------------
+
+
+@pytest.mark.slow
+def test_real_api_anchor_values(monkeypatch):
+    """End-to-end FRED call against known historical anchor values.
+
+    Requires FRED_API_KEY in .env. Skipped (not failed) if missing —
+    this test exists to prove the wrapper works against real FRED, not
+    to gate CI on a credential the host may not have.
+
+    Anchors chosen from the design doc validation section:
+      - T10Y2Y inverted in August 2019 (pre-COVID recession signal)
+      - UNRATE = 14.7% in April 2020 (COVID spike, largest single-month
+        BLS jump on record)
+    """
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    real_key = os.environ.get("FRED_API_KEY", "").strip()
+    if not real_key:
+        pytest.skip("FRED_API_KEY not set in .env")
+    monkeypatch.setenv("FRED_API_KEY", real_key)
+    _reset_client_for_testing()
+
+    t10y2y = get_series(
+        "T10Y2Y", start=dt.date(2019, 8, 1), end=dt.date(2019, 8, 31)
+    )
+    assert not t10y2y.empty
+    assert (t10y2y < 0).any(), (
+        "T10Y2Y should be inverted on at least one day in August 2019"
+    )
+
+    unrate = get_series(
+        "UNRATE", start=dt.date(2020, 4, 1), end=dt.date(2020, 4, 30)
+    )
+    assert not unrate.empty
+    assert abs(unrate.iloc[0] - 14.7) < 0.1, (
+        f"UNRATE for April 2020 expected ~14.7%, got {unrate.iloc[0]}"
+    )
