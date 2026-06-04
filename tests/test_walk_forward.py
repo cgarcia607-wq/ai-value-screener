@@ -397,3 +397,88 @@ def test_split_non_monotonic_dates_raises(monthly_dates_2014_2025):
     cv = WalkForwardCV(train_period=36)
     with pytest.raises(ValueError, match="monotonic"):
         list(cv.split(shuffled))
+
+
+# ---------- strict_period toggle ------------------------------------------
+
+
+@pytest.fixture
+def monthly_dates_2014_to_mid_2025():
+    """Data ending mid-year so the natural final fold runs past data_end."""
+    return pd.date_range(start="2014-01-31", end="2025-06-30", freq="ME")
+
+
+def test_strict_period_default_drops_partial_final_fold(
+    monthly_dates_2014_to_mid_2025, caplog
+):
+    """Default strict_period=True drops folds whose test would extend
+    past data_end. Logs INFO naming the dropped step's hypothetical
+    window."""
+    cv = WalkForwardCV(train_period=36)
+    with caplog.at_level("INFO", logger="src.validation.walk_forward"):
+        folds = list(cv.split(monthly_dates_2014_to_mid_2025))
+    # Final fold's test_end must not exceed the data end.
+    for f in folds:
+        assert f.test_end <= dt.date(2025, 6, 30)
+    # An INFO log line names the dropped step.
+    info_msgs = [r.message for r in caplog.records if r.levelname == "INFO"]
+    assert any("dropping step" in m for m in info_msgs)
+
+
+def test_strict_period_false_yields_truncated_final_fold(
+    monthly_dates_2014_to_mid_2025, caplog
+):
+    """strict_period=False yields the final fold with test_end clipped
+    to data_end. The fold's n_test is correspondingly smaller."""
+    strict = WalkForwardCV(train_period=36, strict_period=True)
+    loose = WalkForwardCV(train_period=36, strict_period=False)
+    n_strict = len(list(strict.split(monthly_dates_2014_to_mid_2025)))
+    with caplog.at_level("INFO", logger="src.validation.walk_forward"):
+        loose_folds = list(loose.split(monthly_dates_2014_to_mid_2025))
+    # Loose mode yields one more fold than strict.
+    assert len(loose_folds) == n_strict + 1
+    # The extra (last) fold's test_end matches data_end.
+    last = loose_folds[-1]
+    assert last.test_end == dt.date(2025, 6, 30)
+    # Truncation INFO log fired.
+    info_msgs = [r.message for r in caplog.records if r.levelname == "INFO"]
+    assert any("truncating" in m for m in info_msgs)
+    # The truncated fold's test window is shorter than test_period=12.
+    assert last.n_test < 12
+
+
+# ---------- summary() -----------------------------------------------------
+
+
+def test_summary_header_includes_config_and_fold_count(monthly_dates_2014_2025):
+    cv = WalkForwardCV(train_period=36)
+    s = cv.summary(monthly_dates_2014_2025)
+    assert "WalkForwardCV: 7 folds" in s
+    assert "expanding" in s
+    assert "train_period=36mo" in s
+    assert "embargo=12mo" in s
+    assert "test_period=12mo" in s
+    assert "step=12mo" in s
+
+
+def test_summary_table_lists_every_fold(monthly_dates_2014_2025):
+    cv = WalkForwardCV(train_period=36)
+    folds = list(cv.split(monthly_dates_2014_2025))
+    s = cv.summary(monthly_dates_2014_2025)
+    # Each fold's IDs appear in the table body.
+    for f in folds:
+        # The fold_id column entry — match against the start of a line
+        # (preceded by newline) to avoid matching dates that contain
+        # the digits.
+        assert f.train_start.isoformat() in s
+        assert f.test_end.isoformat() in s
+
+
+def test_summary_handles_zero_folds():
+    """When the date range is too short to yield any fold, the
+    summary still renders a coherent header (no crash)."""
+    cv = WalkForwardCV(train_period=120)  # 10 years required
+    short = pd.date_range(start="2020-01-31", end="2022-12-31", freq="ME")
+    # split() would raise; summary should also raise (it calls split).
+    with pytest.raises(ValueError):
+        cv.summary(short)

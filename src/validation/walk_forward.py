@@ -258,9 +258,34 @@ class WalkForwardCV:
             # Does this fold's test window fit in available data?
             if test_end > data_end:
                 if self.strict_period:
+                    logger.info(
+                        "WalkForwardCV: dropping step %d (hypothetical "
+                        "test window [%s, %s] exceeds data end %s). Set "
+                        "strict_period=False to yield this fold with a "
+                        "truncated test window.",
+                        step_id,
+                        test_start,
+                        test_end,
+                        data_end,
+                    )
                     return
-                # strict_period=False handling lands in commit 3.
-                return
+                # strict_period=False: truncate the test window to data_end.
+                # If test_start itself is past data_end, there's nothing
+                # to truncate; stop.
+                if test_start > data_end:
+                    return
+                logger.info(
+                    "WalkForwardCV: truncating step %d test window from "
+                    "[%s, %s] to [%s, %s] (strict_period=False). Fold "
+                    "metrics across folds with different test-window "
+                    "sizes are not directly comparable.",
+                    step_id,
+                    test_start,
+                    test_end,
+                    test_start,
+                    data_end,
+                )
+                test_end = data_end
 
             # Map dates to row indices.
             train_mask = (dates >= pd.Timestamp(train_start)) & (
@@ -333,6 +358,49 @@ class WalkForwardCV:
     def summary(self, dates: pd.DatetimeIndex) -> str:
         """Return an ASCII table of the fold structure.
 
-        Not yet implemented — phase 1 commit 3 lands this.
+        Useful for quick sanity checks ("did I configure 7 folds or
+        70?") and as a self-documenting failure message in tests:
+
+            assert metric > 0.5, splitter.summary(dates)
         """
-        raise NotImplementedError("summary() lands in commit 3")
+        folds = list(self.split(dates))
+        mode = "expanding" if self.expanding else "sliding"
+        header = (
+            f"WalkForwardCV: {len(folds)} folds, {mode}, "
+            f"train_period={self.train_period}mo, "
+            f"embargo={self.embargo}mo, "
+            f"test_period={self.test_period}mo, "
+            f"step={self.step}mo"
+        )
+        if not folds:
+            return f"{header}\n\n(no folds yielded for the given date range)"
+
+        cols = [
+            "Fold", "Train start", "Train end", "Embargo end",
+            "Test start", "Test end", "n_train", "n_test",
+        ]
+        rows = [
+            [
+                str(f.fold_id),
+                f.train_start.isoformat(),
+                f.train_end.isoformat(),
+                f.embargo_end.isoformat(),
+                f.test_start.isoformat(),
+                f.test_end.isoformat(),
+                str(f.n_train),
+                str(f.n_test),
+            ]
+            for f in folds
+        ]
+        widths = [
+            max(len(cols[i]), max(len(r[i]) for r in rows))
+            for i in range(len(cols))
+        ]
+        sep = " | "
+        header_row = sep.join(cols[i].ljust(widths[i]) for i in range(len(cols)))
+        divider = "-+-".join("-" * w for w in widths)
+        body_rows = [
+            sep.join(r[i].ljust(widths[i]) for i in range(len(cols)))
+            for r in rows
+        ]
+        return "\n".join([header, "", header_row, divider, *body_rows])
