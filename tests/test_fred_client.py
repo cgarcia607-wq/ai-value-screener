@@ -565,7 +565,12 @@ def test_real_api_anchor_values(monkeypatch):
     """
     from dotenv import load_dotenv
 
-    load_dotenv()
+    # override=True is required: the autouse _reset_state fixture sets
+    # FRED_API_KEY="" before every test for unit-test isolation, and
+    # load_dotenv defaults to override=False (it won't replace an already
+    # present env var). Without override we'd always read "" and skip
+    # even when .env has a real key.
+    load_dotenv(override=True)
     real_key = os.environ.get("FRED_API_KEY", "").strip()
     if not real_key:
         pytest.skip("FRED_API_KEY not set in .env")
