@@ -419,9 +419,41 @@ def get_features_matrix(
         start=pd.Timestamp(start), end=pd.Timestamp(end_date), freq="ME"
     )
 
-    matrix = pd.DataFrame(index=month_ends, dtype="float64")
+    # Per-series fetch with batch-degradation behavior. Individual
+    # failures are collected; <25% failure rate logs a WARNING and
+    # continues with the available series, >=25% aborts. See the
+    # error-handling section of docs/design/fred_client.md.
+    fetched: dict[str, pd.Series] = {}
+    failures: dict[str, str] = {}
     for sid in series_ids:
-        series = get_series(sid, start=start, end=end_date, vintage_date=vintage_date)
+        try:
+            fetched[sid] = get_series(
+                sid, start=start, end=end_date, vintage_date=vintage_date
+            )
+        except Exception as e:
+            logger.warning("FRED series %s fetch failed: %s", sid, e)
+            failures[sid] = repr(e)
+
+    total = len(series_ids)
+    if total > 0 and len(failures) / total >= 0.25:
+        failed_names = sorted(failures.keys())
+        raise RuntimeError(
+            f"FRED feature-matrix fetch aborted: {len(failures)} of {total} "
+            f"series ({len(failures) / total:.0%}) failed, exceeding the "
+            f"25% threshold. Failed series: {failed_names}. See WARNING "
+            f"logs for per-series errors."
+        )
+    if failures:
+        logger.warning(
+            "FRED feature-matrix returning with %d of %d series missing: %s. "
+            "Affected columns will be absent from the result.",
+            len(failures),
+            total,
+            sorted(failures.keys()),
+        )
+
+    matrix = pd.DataFrame(index=month_ends, dtype="float64")
+    for sid, series in fetched.items():
         method = REGIME_SERIES.get(sid, {}).get("resample", "ffill")
         matrix[sid] = _resample_to_month_end(series, month_ends, method)
     return matrix

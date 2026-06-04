@@ -465,6 +465,67 @@ def test_features_matrix_per_series_override_uses_mean(monkeypatch):
     assert matrix.loc["2024-01-31", "DGS10"] != 20.0
 
 
+def test_features_matrix_partial_failure_warns_and_continues(monkeypatch, caplog):
+    """3 of 20 features failing (15% < 25% threshold) returns a 17-col matrix.
+
+    Failed series are absent from the result and a single summary WARNING
+    names all of them. Below-threshold partial failures must not abort.
+    """
+    failing = {"BAA10Y", "VIXCLS", "HOUST"}
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        if series_id in failing:
+            raise ValueError(f"Mocked FRED failure for {series_id}")
+        return _make_series({"2024-01-15": 1.0, "2024-12-15": 1.0})
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    with caplog.at_level("WARNING", logger="src.data_sources.fred_client"):
+        matrix = get_features_matrix(
+            start=dt.date(2024, 1, 1), end=dt.date(2024, 12, 31)
+        )
+
+    # 20 features - 3 failed = 17 columns.
+    assert matrix.shape[1] == 17
+    for sid in failing:
+        assert sid not in matrix.columns
+
+    # Summary WARNING names all three failed series.
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    summary = [m for m in warnings if "feature-matrix returning" in m]
+    assert len(summary) == 1
+    for sid in failing:
+        assert sid in summary[0]
+
+
+def test_features_matrix_majority_failure_raises(monkeypatch):
+    """6 of 20 features failing (30% >= 25% threshold) aborts with RuntimeError.
+
+    The error message must name every failed series so the caller can
+    diagnose the systemic issue (FRED outage? API key revoked?).
+    """
+    failing = {"BAA10Y", "VIXCLS", "HOUST", "DGS10", "UNRATE", "PAYEMS"}
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        if series_id in failing:
+            raise ValueError(f"Mocked FRED failure for {series_id}")
+        return _make_series({"2024-01-15": 1.0})
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    with pytest.raises(RuntimeError) as exc:
+        get_features_matrix(
+            start=dt.date(2024, 1, 1), end=dt.date(2024, 12, 31)
+        )
+
+    msg = str(exc.value)
+    assert "6 of 20" in msg
+    assert "30%" in msg
+    assert "25% threshold" in msg
+    for sid in failing:
+        assert sid in msg
+
+
 def test_features_matrix_smoke_2020(monkeypatch):
     """Shape (12, 20), every expected feature column present, no NaN rows."""
     dates = pd.date_range(start="2020-01-01", end="2020-12-31", freq="D")
