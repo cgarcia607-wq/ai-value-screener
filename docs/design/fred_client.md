@@ -77,8 +77,20 @@ and will need regularization.
 
 | Series | Name | Freq | Units | Why |
 |---|---|---|---|---|
-| `BAMLH0A0HYM2` | ICE BofA US High Yield OAS | D | % | Credit stress proxy, leading indicator for risk-off regimes |
+| `NFCICREDIT` | Chicago Fed NFCI Credit Subindex | W | index | Credit stress proxy with full 1971-present coverage |
 | `BAA10Y` | Moody's Baa Corp Yield − 10Y Treasury | D | % | Investment-grade credit spread |
+
+**Why not ICE BofA HY OAS?** The first version of this design used
+`BAMLH0A0HYM2` (ICE BofA US High Yield OAS) as the HY credit-stress
+signal. In late 2024 ICE Data Indices restricted FRED's public access
+to historical ICE BofA data, truncating `BAMLH0A0HYM2` and every
+sibling `BAML*` series to a rolling ~3-year window — useless for a
+1990-present training corpus. `NFCICREDIT` (Chicago Fed NFCI Credit
+Subindex) replaces it: full 1971-present coverage, Fed-native
+maintenance (no licensing-disclosure risk), and the Chicago Fed
+explicitly weights HY spreads into the subindex construction. Sign
+convention is preserved — positive readings mean tighter than average
+credit, the same direction as a widening OAS.
 
 ### Activity / Labor (coincident + leading)
 

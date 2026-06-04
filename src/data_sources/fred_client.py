@@ -64,11 +64,19 @@ REGIME_SERIES: dict[str, dict] = {
         "is_target": False, "resample": "ffill",
     },
     # --- Credit -------------------------------------------------------
-    "BAMLH0A0HYM2": {
-        "name": "ICE BofA US High Yield Index OAS",
+    # NOTE: BAMLH0A0HYM2 (ICE BofA US High Yield OAS) was the original
+    # HY-spread series here. ICE Data Indices restricted public access
+    # to FRED's historical ICE BofA data in late 2024, truncating that
+    # series (and all sibling BAML* series) to a rolling ~3-year window.
+    # NFCICREDIT (Chicago Fed NFCI Credit Subindex) replaces it: full
+    # 1971-present coverage, Fed-native maintenance, and directly
+    # captures credit stress (positive = tighter than average credit,
+    # negative = looser). See docs/design/fred_client.md.
+    "NFCICREDIT": {
+        "name": "Chicago Fed NFCI Credit Subindex",
         "category": "credit",
-        "frequency": "D", "units": "%",
-        "source": "ICE Data Indices via FRED",
+        "frequency": "W", "units": "index",
+        "source": "Federal Reserve Bank of Chicago via FRED",
         "is_target": False, "resample": "ffill",
     },
     "BAA10Y": {
@@ -313,12 +321,11 @@ def get_series(
         series = _fetch_from_fred(series_id, start, end, vintage_date)
         _write_cache(cache_path, series)
 
-    # Defensive filter — cache may have a wider range than the current call.
-    if start is not None:
-        series = series[series.index >= pd.Timestamp(start)]
-    if end is not None:
-        series = series[series.index <= pd.Timestamp(end)]
-
+    # Short-circuit empty results BEFORE the defensive filter. fredapi
+    # returns empty Series with a default RangeIndex (int64), not an
+    # empty DatetimeIndex, so `series.index >= pd.Timestamp(start)` would
+    # raise TypeError ('>=' not supported between numpy.ndarray and
+    # Timestamp). The filter is only meaningful when the index is real.
     if series.empty:
         if vintage_date is not None:
             logger.warning(
@@ -334,6 +341,14 @@ def get_series(
                 start,
                 end,
             )
+        return series
+
+    # Defensive filter — cache may have a wider range than the current call.
+    if start is not None:
+        series = series[series.index >= pd.Timestamp(start)]
+    if end is not None:
+        series = series[series.index <= pd.Timestamp(end)]
+
     return series
 
 

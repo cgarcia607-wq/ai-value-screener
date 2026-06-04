@@ -239,6 +239,35 @@ def test_get_series_empty_range_returns_empty_no_raise(monkeypatch, caplog):
     assert not warning_records
 
 
+def test_get_series_empty_rangeindex_does_not_crash(monkeypatch):
+    """Regression: empty Series with RangeIndex must not raise.
+
+    fredapi returns an empty Series with a default RangeIndex (int64) —
+    not an empty DatetimeIndex — when FRED has no observations in the
+    requested range. The original implementation ran
+    `series[series.index >= pd.Timestamp(start)]` unconditionally,
+    crashing with TypeError because RangeIndex(int64) >= Timestamp is
+    not defined. Short-circuiting empty before the filter fixes it.
+
+    Triggered in practice by BAMLH0A0HYM2 after ICE Data Indices
+    restricted FRED's historical access in late 2024. See
+    docs/design/fred_client.md credit-section note.
+    """
+    fred = MagicMock()
+    # Empty Series with default RangeIndex — the fredapi return shape
+    # we observed for ICE BofA series with truncated history.
+    fred.get_series.return_value = pd.Series(dtype="object")
+    _install_mock_client(monkeypatch, fred)
+
+    # No raise. Returns empty.
+    result = get_series(
+        "BAMLH0A0HYM2",
+        start=dt.date(2020, 1, 1),
+        end=dt.date(2020, 12, 31),
+    )
+    assert result.empty
+
+
 def test_get_series_missing_at_vintage_returns_empty_with_warning(monkeypatch, caplog):
     """Empty vintage response returns empty Series and logs WARNING
     naming series_id and vintage_date. Does not raise.
@@ -624,4 +653,25 @@ def test_real_api_anchor_values(monkeypatch):
         f"If this fails, the vintage query is returning the LATEST "
         f"revision instead of the point-in-time value — this is the "
         f"look-ahead-bias guardrail and is load-bearing."
+    )
+
+    # NFCICREDIT (Chicago Fed Credit Subindex) replaces the historical
+    # ICE BofA HY OAS series after ICE restricted FRED's access in
+    # late 2024. This anchor verifies the replacement actually behaves
+    # like a credit-stress index: it must rise sharply during the COVID
+    # credit shock of March-April 2020. The series was -0.10 in early
+    # January 2020 (looser-than-average credit), peaked at +0.63 on
+    # 2020-04-10, and stayed elevated through May. The threshold > 0.5
+    # is well above any normal-times reading and unambiguous about
+    # which direction the series moved.
+    nfci_credit = get_series(
+        "NFCICREDIT", start=dt.date(2020, 3, 1), end=dt.date(2020, 5, 1)
+    )
+    assert not nfci_credit.empty
+    assert nfci_credit.max() > 0.5, (
+        f"NFCICREDIT max during COVID stress window (Mar-May 2020) "
+        f"expected > 0.5; got {nfci_credit.max():.3f}. The series "
+        f"should be visibly elevated during the worst credit-stress "
+        f"event of the test window. If this fails the replacement "
+        f"series may have been further restricted or relocated."
     )
