@@ -17,6 +17,7 @@ from src.data_sources.fred_client import (
     REGIME_SERIES,
     _MISSING_KEY_MESSAGE,
     _reset_client_for_testing,
+    get_features_matrix,
     get_series,
     list_series,
     validate_api_key,
@@ -310,6 +311,179 @@ def test_get_series_vintage_cache_never_expires(monkeypatch):
 
     get_series("UNRATE", vintage_date=vintage)
     assert fred.get_series.call_count == 1
+
+
+# ---------- get_features_matrix -------------------------------------------
+
+
+def _install_mock_get_series(monkeypatch, fn):
+    """Replace module-level get_series with `fn`. Caller controls behavior."""
+    monkeypatch.setattr("src.data_sources.fred_client.get_series", fn)
+
+
+def test_features_matrix_excludes_usrec_by_default(monkeypatch):
+    """Label-leakage guardrail: USREC must be absent from default columns."""
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        return _make_series({"2024-01-15": 1.0, "2024-12-15": 1.0})
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    matrix = get_features_matrix(
+        start=dt.date(2024, 1, 1), end=dt.date(2024, 12, 31)
+    )
+    assert "USREC" not in matrix.columns
+
+
+def test_features_matrix_includes_usrec_when_exclude_targets_false(monkeypatch):
+    """Override exclude_targets=False to include USREC (for label construction)."""
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        return _make_series({"2024-01-15": 1.0, "2024-12-15": 1.0})
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    matrix = get_features_matrix(
+        start=dt.date(2024, 1, 1),
+        end=dt.date(2024, 12, 31),
+        exclude_targets=False,
+    )
+    assert "USREC" in matrix.columns
+
+
+def test_features_matrix_passes_vintage_to_each_get_series_call(monkeypatch):
+    """Look-ahead-bias guardrail: every underlying call gets vintage_date."""
+    calls: list[dict] = []
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        calls.append({"series_id": series_id, "vintage_date": vintage_date})
+        return _make_series({"2024-01-15": 1.0})
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    vintage = dt.date(2024, 6, 30)
+    get_features_matrix(
+        series_ids=["DGS10", "UNRATE", "PAYEMS"],
+        start=dt.date(2024, 1, 1),
+        end=dt.date(2024, 1, 31),
+        vintage_date=vintage,
+    )
+    assert len(calls) == 3
+    for c in calls:
+        assert c["vintage_date"] == vintage, (
+            f"Call for {c['series_id']} did not receive vintage_date"
+        )
+
+
+def test_features_matrix_aligns_daily_to_month_end(monkeypatch):
+    """Daily series resolves to one row per month-end."""
+    dates = pd.date_range(start="2024-01-01", end="2024-12-31", freq="D")
+    daily = pd.Series(range(len(dates)), index=dates, dtype="float64")
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        return daily if series_id == "DGS10" else pd.Series(dtype="float64")
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    matrix = get_features_matrix(
+        series_ids=["DGS10"],
+        start=dt.date(2024, 1, 1),
+        end=dt.date(2024, 12, 31),
+    )
+    # 12 calendar month-ends in 2024.
+    assert len(matrix) == 12
+    # The Jan 31 value is the daily series' value on Jan 31.
+    assert matrix.loc["2024-01-31", "DGS10"] == daily.loc["2024-01-31"]
+    # The Dec 31 value is the daily series' value on Dec 31.
+    assert matrix.loc["2024-12-31", "DGS10"] == daily.loc["2024-12-31"]
+
+
+def test_features_matrix_aligns_weekly_to_month_end(monkeypatch):
+    """Weekly series resolves to one row per month-end (last weekly obs)."""
+    weekly_dates = pd.date_range(start="2024-01-01", end="2024-12-31", freq="W-FRI")
+    weekly = pd.Series(range(len(weekly_dates)), index=weekly_dates, dtype="float64")
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        return weekly
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    matrix = get_features_matrix(
+        series_ids=["ICSA"],
+        start=dt.date(2024, 1, 1),
+        end=dt.date(2024, 12, 31),
+    )
+    assert len(matrix) == 12
+    # Jan 31 should reflect the last Friday in January 2024 (Jan 26).
+    last_fri_jan = weekly[weekly.index <= "2024-01-31"].iloc[-1]
+    assert matrix.loc["2024-01-31", "ICSA"] == last_fri_jan
+
+
+def test_features_matrix_aligns_monthly_to_month_end(monkeypatch):
+    """Monthly series is passed through, one obs per month, no ffill needed."""
+    # FRED publishes monthly series dated to the first of the month.
+    monthly_dates = pd.date_range(start="2024-01-01", end="2024-12-01", freq="MS")
+    monthly = pd.Series(range(len(monthly_dates)), index=monthly_dates, dtype="float64")
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        return monthly
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    matrix = get_features_matrix(
+        series_ids=["UNRATE"],
+        start=dt.date(2024, 1, 1),
+        end=dt.date(2024, 12, 31),
+    )
+    assert len(matrix) == 12
+    # Each month's value comes through.
+    assert matrix.loc["2024-01-31", "UNRATE"] == 0
+    assert matrix.loc["2024-12-31", "UNRATE"] == 11
+
+
+def test_features_matrix_per_series_override_uses_mean(monkeypatch):
+    """REGIME_SERIES[id]['resample']='mean' switches to within-month average."""
+    # Construct a January series with two distinct halves so mean is non-trivial.
+    dates = pd.date_range(start="2024-01-01", end="2024-01-31", freq="D")
+    values = [10.0] * 15 + [20.0] * (len(dates) - 15)
+    series = pd.Series(values, index=dates, dtype="float64")
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        return series
+
+    _install_mock_get_series(monkeypatch, fake)
+    monkeypatch.setitem(REGIME_SERIES["DGS10"], "resample", "mean")
+
+    matrix = get_features_matrix(
+        series_ids=["DGS10"],
+        start=dt.date(2024, 1, 1),
+        end=dt.date(2024, 1, 31),
+    )
+    # Mean of the 31-day window; clearly distinct from "last" (which would be 20.0).
+    expected = series.mean()
+    assert abs(matrix.loc["2024-01-31", "DGS10"] - expected) < 1e-6
+    assert matrix.loc["2024-01-31", "DGS10"] != 20.0
+
+
+def test_features_matrix_smoke_2020(monkeypatch):
+    """Shape (12, 20), every expected feature column present, no NaN rows."""
+    dates = pd.date_range(start="2020-01-01", end="2020-12-31", freq="D")
+    daily = pd.Series(range(len(dates)), index=dates, dtype="float64")
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        return daily
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    matrix = get_features_matrix(
+        start=dt.date(2020, 1, 1), end=dt.date(2020, 12, 31)
+    )
+    assert matrix.shape == (12, 20)
+    expected_cols = {
+        sid for sid, meta in REGIME_SERIES.items() if not meta["is_target"]
+    }
+    assert set(matrix.columns) == expected_cols
+    assert not matrix.isna().any().any()
 
 
 # ---------- Integration (real FRED API, slow) -----------------------------

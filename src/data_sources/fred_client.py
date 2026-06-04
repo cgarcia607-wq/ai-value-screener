@@ -337,6 +337,96 @@ def get_series(
     return series
 
 
+def _resample_to_month_end(
+    series: pd.Series,
+    month_ends: pd.DatetimeIndex,
+    method: str,
+) -> pd.Series:
+    """Align a series to a month-end DatetimeIndex via the given method.
+
+    Methods:
+        "ffill": resample('ME').last(), then ffill across gaps after
+            reindexing to `month_ends`. Default for as-of semantics.
+        "last": resample('ME').last(), no ffill. Strict — empty months
+            remain NaN.
+        "mean": resample('ME').mean(). Period-average semantics.
+    """
+    if method not in {"ffill", "last", "mean"}:
+        raise ValueError(
+            f"Unknown resample method '{method}'. Expected 'ffill', "
+            f"'mean', or 'last'."
+        )
+    if series.empty:
+        return pd.Series(index=month_ends, dtype="float64")
+
+    if method == "mean":
+        resampled = series.resample("ME").mean()
+    else:
+        resampled = series.resample("ME").last()
+
+    aligned = resampled.reindex(month_ends)
+    if method == "ffill":
+        aligned = aligned.ffill()
+    return aligned
+
+
+def get_features_matrix(
+    series_ids: list[str] | None = None,
+    start: dt.date = dt.date(1990, 1, 1),
+    end: dt.date | None = None,
+    frequency: str = "M",
+    vintage_date: dt.date | None = None,
+    exclude_targets: bool = True,
+) -> pd.DataFrame:
+    """Fetch multiple FRED series and align to a common monthly cross-section.
+
+    Args:
+        series_ids: list of FRED IDs to fetch. None = all REGIME_SERIES.
+            USREC is excluded by default via `exclude_targets`; pass
+            `exclude_targets=False` to include it (e.g., for label
+            construction in `regime_labels.py`).
+        start, end: date range. `end=None` means today.
+        frequency: only 'M' (month-end) is supported in v1.
+        vintage_date: passed through to every underlying get_series
+            call. None = latest revisions; date = point-in-time
+            "as known on date X" snapshot.
+        exclude_targets: if True (default), drop any series with
+            is_target=True from the result. This is the label-leakage
+            guardrail.
+
+    Returns:
+        DataFrame indexed by month-end DatetimeIndex with one column
+        per requested series. Per-series resampling uses
+        REGIME_SERIES[id]["resample"].
+    """
+    if frequency != "M":
+        raise NotImplementedError(
+            f"frequency={frequency!r} not yet supported. Only 'M' "
+            f"(month-end) is implemented in v1. See "
+            f"docs/design/fred_client.md."
+        )
+
+    if series_ids is None:
+        series_ids = list(REGIME_SERIES.keys())
+    if exclude_targets:
+        series_ids = [
+            s for s in series_ids
+            if not REGIME_SERIES.get(s, {}).get("is_target", False)
+        ]
+
+    end_date = end or dt.date.today()
+    month_ends = pd.date_range(
+        start=pd.Timestamp(start), end=pd.Timestamp(end_date), freq="ME"
+    )
+
+    matrix = pd.DataFrame(index=month_ends, dtype="float64")
+    for sid in series_ids:
+        series = get_series(sid, start=start, end=end_date, vintage_date=vintage_date)
+        method = REGIME_SERIES.get(sid, {}).get("resample", "ffill")
+        matrix[sid] = _resample_to_month_end(series, month_ends, method)
+    return matrix
+
+
 def list_series(category: str | None = None) -> pd.DataFrame:
     """Return REGIME_SERIES as a DataFrame for inspection.
 
