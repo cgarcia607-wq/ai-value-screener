@@ -438,6 +438,17 @@ def get_features_matrix(
     # failures are collected; <25% failure rate logs a WARNING and
     # continues with the available series, >=25% aborts. See the
     # error-handling section of docs/design/fred_client.md.
+    #
+    # Any exception that lands here is by construction NOT a soft
+    # "FRED returned empty" condition — those are absorbed inside
+    # get_series and return an empty Series without raising. So
+    # anything we catch is either a FRED-side API failure or a
+    # code-level bug in our wrapper. We log the full traceback
+    # (exc_info=True) so the two are immediately distinguishable: a
+    # FRED HTTP error vs. a TypeError in our own code reads very
+    # differently in the traceback. Without exc_info, the original
+    # BAMLH0A0HYM2 RangeIndex bug masqueraded as a missing-data
+    # condition for weeks.
     fetched: dict[str, pd.Series] = {}
     failures: dict[str, str] = {}
     for sid in series_ids:
@@ -446,7 +457,13 @@ def get_features_matrix(
                 sid, start=start, end=end_date, vintage_date=vintage_date
             )
         except Exception as e:
-            logger.warning("FRED series %s fetch failed: %s", sid, e)
+            logger.warning(
+                "FRED series %s raised an exception during fetch "
+                "(this is not a soft missing-data condition — those "
+                "do not raise). Full traceback follows:",
+                sid,
+                exc_info=True,
+            )
             failures[sid] = repr(e)
 
     total = len(series_ids)

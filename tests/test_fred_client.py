@@ -527,6 +527,56 @@ def test_features_matrix_partial_failure_warns_and_continues(monkeypatch, caplog
         assert sid in summary[0]
 
 
+def test_features_matrix_logs_full_traceback_on_code_bug(monkeypatch, caplog):
+    """A code-level exception (TypeError, etc.) must log with full traceback.
+
+    Without exc_info, code bugs in our wrapper masquerade as soft
+    missing-data conditions in the per-series WARNING log. The
+    BAMLH0A0HYM2 RangeIndex bug lived for weeks because its one-line
+    WARNING ("'>=' not supported between numpy.ndarray and Timestamp")
+    looked superficially similar to a FRED data issue. The traceback
+    makes the distinction unambiguous.
+    """
+
+    def fake(series_id, start=None, end=None, vintage_date=None):
+        if series_id == "DGS10":
+            # Simulate a code-bug exception. Realistic shape: the kind
+            # of TypeError that arose from the original BAMLH0A0HYM2 bug.
+            raise TypeError(
+                "'>=' not supported between instances of "
+                "'numpy.ndarray' and 'Timestamp'"
+            )
+        return _make_series({"2024-01-15": 1.0})
+
+    _install_mock_get_series(monkeypatch, fake)
+
+    with caplog.at_level("WARNING", logger="src.data_sources.fred_client"):
+        get_features_matrix(
+            start=dt.date(2024, 1, 1), end=dt.date(2024, 12, 31)
+        )
+
+    # The per-series WARNING (distinct from the summary WARNING that
+    # lists missing series) must include the traceback. caplog's
+    # LogRecord.exc_info is non-None iff exc_info=True was passed.
+    per_series_warnings = [
+        r for r in caplog.records
+        if r.levelname == "WARNING" and "raised an exception" in r.message
+    ]
+    assert len(per_series_warnings) == 1
+    record = per_series_warnings[0]
+    assert "DGS10" in record.message
+    assert record.exc_info is not None, (
+        "Per-series WARNING for an exception must include exc_info so "
+        "the traceback is logged. Without it, code bugs hide as soft "
+        "missing-data conditions."
+    )
+    exc_type, _, _ = record.exc_info
+    assert exc_type is TypeError
+    # The message itself should also be unambiguous about this being
+    # an exception path, not a missing-data path.
+    assert "not a soft missing-data condition" in record.message
+
+
 def test_features_matrix_majority_failure_raises(monkeypatch):
     """6 of 20 features failing (30% >= 25% threshold) aborts with RuntimeError.
 
