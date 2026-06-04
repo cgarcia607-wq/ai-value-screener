@@ -60,9 +60,15 @@ tests/                    # pytest, run on every push via GitHub Actions.
 - **Look-ahead bias**: fundamentals MUST be as-of the prediction date, never
   the current snapshot. yfinance is acceptable for prices, NEVER for
   fundamentals in training.
-- **Validation**: walk-forward / expanding-window CV with a 1-month embargo
-  between train and test. NEVER use `train_test_split` or k-fold on time
-  series data.
+- **Validation**: walk-forward / expanding-window CV with embargo
+  ≥ label horizon — **12 months for the screener** (matching the
+  12-month forward-return label), **1 month for the regime classifier**
+  (concurrent labels). The embargo must be at least as long as the
+  label-computation window or training rows' labels overlap the test
+  period in real time, implicitly leaking test-period outcomes into
+  training. See [docs/design/walk_forward_cv.md](docs/design/walk_forward_cv.md)
+  for the full reasoning. NEVER use `train_test_split` or k-fold on
+  time-series data.
 - **Features**: convert raw fundamentals to cross-sectional ranks or z-scores
   within each date, optionally sector-neutralized. Raw P/E etc. does not
   generalize across regimes.
@@ -82,7 +88,10 @@ tests/                    # pytest, run on every push via GitHub Actions.
   Document the rules clearly in `regime_labels.py`.
 - **Baseline**: always train a logistic regression baseline alongside XGBoost.
   If XGBoost doesn't beat it meaningfully, use the simpler model.
-- **Validation**: same walk-forward CV as the stock model.
+- **Validation**: same walk-forward CV harness as the stock model,
+  with embargo=1 month (labels are concurrent — month M's regime is
+  determined from month M's macro features, so a 1-month embargo
+  fully prevents leakage).
 - **Sample size discipline**: ~35 years of monthly macro data is ~420 obs.
   Be skeptical of complex models. Regularize aggressively.
 
