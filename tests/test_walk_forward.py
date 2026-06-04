@@ -594,6 +594,75 @@ def test_split_long_no_empty_folds_yielded(long_df_uniform):
         assert f.n_test > 0
 
 
+def test_split_indices_yields_ndarray_tuples(monthly_dates_2014_2025):
+    """Output is a sequence of (np.ndarray, np.ndarray) tuples of int indices,
+    matching the BaseCrossValidator.split protocol shape."""
+    cv = WalkForwardCV(train_period=36)
+    pairs = list(cv.split_indices(monthly_dates_2014_2025))
+    assert len(pairs) == 7  # screener default fold count
+    for train_idx, test_idx in pairs:
+        assert isinstance(train_idx, np.ndarray)
+        assert isinstance(test_idx, np.ndarray)
+        # Integer dtype — sklearn expects integer position indices.
+        assert train_idx.dtype.kind in ("i", "u")
+        assert test_idx.dtype.kind in ("i", "u")
+        # Non-empty windows.
+        assert len(train_idx) > 0
+        assert len(test_idx) > 0
+        # No overlap.
+        assert np.intersect1d(train_idx, test_idx).size == 0
+
+
+def test_split_indices_matches_split_arrays(monthly_dates_2014_2025):
+    """Same input produces identical indices via split() and split_indices()."""
+    cv = WalkForwardCV(train_period=36)
+    rich_pairs = [
+        (f.train_indices, f.test_indices)
+        for f in cv.split(monthly_dates_2014_2025)
+    ]
+    shim_pairs = list(cv.split_indices(monthly_dates_2014_2025))
+    assert len(rich_pairs) == len(shim_pairs)
+    for (r_tr, r_te), (s_tr, s_te) in zip(rich_pairs, shim_pairs):
+        np.testing.assert_array_equal(r_tr, s_tr)
+        np.testing.assert_array_equal(r_te, s_te)
+
+
+def test_split_indices_cross_val_score_smoke(monthly_dates_2014_2025):
+    """End-to-end: cross_val_score actually runs with our shim.
+
+    Uses sklearn.dummy.DummyClassifier so the test never depends on
+    convergence behavior of a real classifier. The point is to prove
+    the shim is wire-compatible with sklearn — that we yield the
+    expected number of fold scores in the expected dtype, not that
+    the model is any good.
+    """
+    from sklearn.dummy import DummyClassifier
+    from sklearn.model_selection import cross_val_score
+
+    rng = np.random.default_rng(seed=42)
+    n = len(monthly_dates_2014_2025)
+    X = pd.DataFrame(
+        {"f1": rng.normal(size=n), "f2": rng.normal(size=n)},
+        index=monthly_dates_2014_2025,
+    )
+    y = pd.Series(rng.integers(0, 2, n), index=monthly_dates_2014_2025)
+
+    cv = WalkForwardCV(train_period=36)
+    scores = cross_val_score(
+        DummyClassifier(strategy="most_frequent"),
+        X,
+        y,
+        cv=list(cv.split_indices(monthly_dates_2014_2025)),
+    )
+
+    # One score per fold.
+    expected_n_folds = sum(1 for _ in cv.split(monthly_dates_2014_2025))
+    assert len(scores) == expected_n_folds == 7
+    # Scores are floats in [0, 1] for accuracy on binary labels.
+    assert all(np.isfinite(s) for s in scores)
+    assert all(0.0 <= s <= 1.0 for s in scores)
+
+
 def test_split_long_empty_test_window_logs_warning(monkeypatch, caplog):
     """Defensive WARNING when the long-df mapping finds no test rows.
 

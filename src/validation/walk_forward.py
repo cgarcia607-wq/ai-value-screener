@@ -355,6 +355,31 @@ class WalkForwardCV:
             )
         return train_start, train_end
 
+    def split_indices(
+        self, dates: pd.DatetimeIndex
+    ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        """sklearn-style shim: yield (train_indices, test_indices) tuples.
+
+        Drops fold metadata (vintage_date, date windows, fold_id) — use
+        split() if you need them. The output shape matches
+        `BaseCrossValidator.split` so the iterator can be passed
+        directly as the `cv` argument to `cross_val_score`,
+        `GridSearchCV`, and friends:
+
+            >>> from sklearn.model_selection import cross_val_score
+            >>> cv = WalkForwardCV(train_period=36)
+            >>> cross_val_score(model, X, y, cv=list(cv.split_indices(X.index)))
+
+        The vintage_date and other Fold metadata are intentionally not
+        threaded through — sklearn doesn't model them, and the
+        screener's custom evaluation harness (Sharpe, decile spread,
+        drawdown, transaction costs) doesn't use cross_val_score
+        anyway. The shim is mainly for hyperparameter tuning of the
+        inner classifier in the regime model.
+        """
+        for fold in self.split(dates):
+            yield fold.train_indices, fold.test_indices
+
     def split_long(
         self, df: pd.DataFrame, date_col: str = "as_of_date"
     ) -> Iterator[Fold]:
