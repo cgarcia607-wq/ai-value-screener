@@ -482,3 +482,156 @@ def test_summary_handles_zero_folds():
     # split() would raise; summary should also raise (it calls split).
     with pytest.raises(ValueError):
         cv.summary(short)
+
+
+# ---------- split_long (long-format adapter) ------------------------------
+
+
+def _make_long_df(dates: pd.DatetimeIndex, tickers: list[str]) -> pd.DataFrame:
+    """5-ticker uniform long-format DataFrame."""
+    rows = [
+        {"as_of_date": d, "ticker": t, "feature": float(hash((d, t)) % 100)}
+        for d in dates
+        for t in tickers
+    ]
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture
+def long_df_uniform(monthly_dates_2014_2025):
+    """Uniform 5-ticker long-format DF, 144 months x 5 = 720 rows."""
+    return _make_long_df(monthly_dates_2014_2025, ["AAPL", "MSFT", "GOOGL", "AMZN", "META"])
+
+
+def test_split_long_yields_same_fold_count_as_base_split(
+    long_df_uniform, monthly_dates_2014_2025
+):
+    cv = WalkForwardCV(train_period=36)
+    base = list(cv.split(monthly_dates_2014_2025))
+    long_folds = list(cv.split_long(long_df_uniform))
+    assert len(long_folds) == len(base) == 7
+
+
+def test_split_long_fold_date_windows_match_base(
+    long_df_uniform, monthly_dates_2014_2025
+):
+    """Fold date metadata is identical between split() and split_long()."""
+    cv = WalkForwardCV(train_period=36)
+    for base, long_f in zip(
+        cv.split(monthly_dates_2014_2025), cv.split_long(long_df_uniform)
+    ):
+        assert base.train_start == long_f.train_start
+        assert base.train_end == long_f.train_end
+        assert base.embargo_start == long_f.embargo_start
+        assert base.embargo_end == long_f.embargo_end
+        assert base.test_start == long_f.test_start
+        assert base.test_end == long_f.test_end
+        assert base.vintage_date == long_f.vintage_date
+
+
+def test_split_long_indices_count_scales_with_universe(long_df_uniform):
+    """5 tickers * train months = expected n_train per fold."""
+    cv = WalkForwardCV(train_period=36)
+    f0 = next(iter(cv.split_long(long_df_uniform)))
+    # 36 months * 5 tickers = 180 train rows
+    assert f0.n_train == 36 * 5
+    # 12 months * 5 tickers = 60 test rows
+    assert f0.n_test == 12 * 5
+
+
+def test_split_long_handles_ragged_universe(monthly_dates_2014_2025):
+    """Different tickers in different months: all rows for a given date
+    stay together in one fold; no date is split across train/test."""
+    np.random.seed(42)
+    pool = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
+    rows = []
+    for d in monthly_dates_2014_2025:
+        n = int(np.random.randint(3, 8))
+        for t in np.random.choice(pool, size=n, replace=False):
+            rows.append({"as_of_date": d, "ticker": t, "feature": 1.0})
+    df = pd.DataFrame(rows)
+
+    cv = WalkForwardCV(train_period=36)
+    for f in cv.split_long(df):
+        train_dates = df.iloc[f.train_indices]["as_of_date"]
+        test_dates = df.iloc[f.test_indices]["as_of_date"]
+        # Every train_date row is in [train_start, train_end].
+        assert (train_dates >= pd.Timestamp(f.train_start)).all()
+        assert (train_dates <= pd.Timestamp(f.train_end)).all()
+        # Every test_date row is in [test_start, test_end].
+        assert (test_dates >= pd.Timestamp(f.test_start)).all()
+        assert (test_dates <= pd.Timestamp(f.test_end)).all()
+        # No date appears in both windows — the strict inequality
+        # max(train) < min(test) is the per-fold no-leakage check.
+        assert train_dates.max() < test_dates.min()
+
+
+def test_split_long_excludes_embargo_dates(long_df_uniform):
+    """Dates in the embargo period appear in NEITHER train nor test indices."""
+    cv = WalkForwardCV(train_period=36, embargo=12)
+    for f in cv.split_long(long_df_uniform):
+        all_idx = np.concatenate([f.train_indices, f.test_indices])
+        all_dates = long_df_uniform.iloc[all_idx]["as_of_date"]
+        # Embargo is [embargo_start, embargo_end), so test the open
+        # upper bound: no date in [embargo_start, embargo_end).
+        in_embargo = (all_dates >= pd.Timestamp(f.embargo_start)) & (
+            all_dates < pd.Timestamp(f.embargo_end)
+        )
+        assert not in_embargo.any()
+
+
+def test_split_long_invalid_date_col_raises(long_df_uniform):
+    cv = WalkForwardCV(train_period=36)
+    with pytest.raises(ValueError, match="date_col"):
+        list(cv.split_long(long_df_uniform, date_col="not_a_column"))
+
+
+def test_split_long_no_empty_folds_yielded(long_df_uniform):
+    """Contract: split_long never yields a fold with empty train or test."""
+    cv = WalkForwardCV(train_period=36)
+    for f in cv.split_long(long_df_uniform):
+        assert f.n_train > 0
+        assert f.n_test > 0
+
+
+def test_split_long_empty_test_window_logs_warning(monkeypatch, caplog):
+    """Defensive WARNING when the long-df mapping finds no test rows.
+
+    The engine already verifies non-empty windows on unique_dates, so
+    this case is unlikely in practice — but it can happen if df's date
+    column has a type mismatch from the unique_dates the engine saw.
+    Skip with a WARNING that names the windows; never silently yield
+    an empty fold.
+    """
+    # df with dates only through 2017
+    dates = pd.date_range(start="2014-01-31", end="2017-12-31", freq="ME")
+    df = pd.DataFrame(
+        {"as_of_date": dates, "ticker": "AAPL", "feature": 1.0}
+    )
+
+    # Hand-craft a fold whose test window is in 2018 (no rows in df).
+    fake_fold = Fold(
+        fold_id=0,
+        train_start=dt.date(2014, 1, 31),
+        train_end=dt.date(2016, 12, 31),
+        embargo_start=dt.date(2017, 1, 1),
+        embargo_end=dt.date(2018, 1, 1),
+        test_start=dt.date(2018, 1, 1),
+        test_end=dt.date(2018, 12, 31),
+        vintage_date=dt.date(2018, 1, 1),
+        train_indices=np.array([0, 1]),
+        test_indices=np.array([2, 3]),
+    )
+
+    cv = WalkForwardCV(train_period=36)
+    monkeypatch.setattr(cv, "split", lambda _d: iter([fake_fold]))
+
+    with caplog.at_level("WARNING", logger="src.validation.walk_forward"):
+        folds = list(cv.split_long(df))
+
+    # No folds yielded — the empty-test-window fold was skipped.
+    assert len(folds) == 0
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "empty long-format window" in w.message for w in warnings
+    )

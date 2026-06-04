@@ -355,6 +355,95 @@ class WalkForwardCV:
             )
         return train_start, train_end
 
+    def split_long(
+        self, df: pd.DataFrame, date_col: str = "as_of_date"
+    ) -> Iterator[Fold]:
+        """Long-format adapter for the stock screener's (date, ticker) input.
+
+        For each fold from the underlying date-engine, all rows of `df`
+        whose `date_col` value falls in the fold's train or test window
+        are mapped to row indices. A `(date, ticker)` row belongs to a
+        fold based on its date alone — ragged universes (different
+        tickers per month) are handled automatically.
+
+        Args:
+            df: long-format DataFrame with one row per (date, ticker)
+                pair. Must contain `date_col`.
+            date_col: name of the date column. Defaults to `as_of_date`
+                to match `sp500_membership.parquet`.
+
+        Yields:
+            Fold with `train_indices` and `test_indices` being row
+            positions in `df` (not unique-date positions). fold_id is
+            re-numbered sequentially in yield order, so consumers see
+            0, 1, 2... even when intermediate folds are skipped due to
+            empty long-format windows.
+
+        Raises:
+            ValueError: `date_col` not in df.columns, or the underlying
+                split() raises (e.g., data span too short).
+        """
+        if date_col not in df.columns:
+            raise ValueError(
+                f"date_col {date_col!r} not in DataFrame columns "
+                f"({list(df.columns)})"
+            )
+
+        df_dates = pd.to_datetime(df[date_col])
+        unique_dates = pd.DatetimeIndex(
+            df_dates.drop_duplicates().sort_values()
+        )
+
+        yielded = 0
+        for base in self.split(unique_dates):
+            train_mask = (df_dates >= pd.Timestamp(base.train_start)) & (
+                df_dates <= pd.Timestamp(base.train_end)
+            )
+            test_mask = (df_dates >= pd.Timestamp(base.test_start)) & (
+                df_dates <= pd.Timestamp(base.test_end)
+            )
+            train_indices = np.where(train_mask)[0]
+            test_indices = np.where(test_mask)[0]
+
+            # Defensive: by construction the engine has already verified
+            # non-empty windows on unique_dates, but if the long df
+            # somehow lacks rows for the dates in the window (e.g., a
+            # tz mismatch or a downstream filter the engine didn't see),
+            # we skip with a loud WARNING rather than silently emit an
+            # empty fold.
+            if len(train_indices) == 0 or len(test_indices) == 0:
+                logger.warning(
+                    "split_long: skipping fold with empty long-format "
+                    "window after row mapping. train_window=[%s, %s] -> "
+                    "n_train=%d, test_window=[%s, %s] -> n_test=%d. The "
+                    "underlying date engine yielded a fold but no rows "
+                    "in df match its windows — likely a date-type "
+                    "mismatch in df[%r] or a row filter applied after "
+                    "split_long received df.",
+                    base.train_start,
+                    base.train_end,
+                    len(train_indices),
+                    base.test_start,
+                    base.test_end,
+                    len(test_indices),
+                    date_col,
+                )
+                continue
+
+            yield Fold(
+                fold_id=yielded,
+                train_start=base.train_start,
+                train_end=base.train_end,
+                embargo_start=base.embargo_start,
+                embargo_end=base.embargo_end,
+                test_start=base.test_start,
+                test_end=base.test_end,
+                vintage_date=base.vintage_date,
+                train_indices=train_indices,
+                test_indices=test_indices,
+            )
+            yielded += 1
+
     def summary(self, dates: pd.DatetimeIndex) -> str:
         """Return an ASCII table of the fold structure.
 
