@@ -585,10 +585,43 @@ def test_real_api_anchor_values(monkeypatch):
         "T10Y2Y should be inverted on at least one day in August 2019"
     )
 
-    unrate = get_series(
+    # Latest-revision UNRATE for April 2020.
+    # BLS revises early-release unemployment figures as more data
+    # arrives. Initial release (May 2020) was 14.7%; current revised
+    # value is 14.8% as of 2026. Tolerance accommodates further
+    # revisions; precision is asserted by the vintage query below.
+    unrate_latest = get_series(
         "UNRATE", start=dt.date(2020, 4, 1), end=dt.date(2020, 4, 30)
     )
-    assert not unrate.empty
-    assert abs(unrate.iloc[0] - 14.7) < 0.1, (
-        f"UNRATE for April 2020 expected ~14.7%, got {unrate.iloc[0]}"
+    assert not unrate_latest.empty
+    assert abs(unrate_latest.iloc[0] - 14.7) < 0.2, (
+        f"UNRATE for April 2020 expected ~14.7% (or a small revision "
+        f"thereof), got {unrate_latest.iloc[0]}"
+    )
+
+    # Vintage-aware UNRATE for April 2020 as known on 2020-05-15.
+    # This is the LOAD-BEARING look-ahead-bias guardrail at the
+    # integration level. A walk-forward CV fold ending in mid-2020
+    # must see UNRATE as it was published then (14.7%), not as it
+    # was later revised (14.8%). If this assertion ever fails, the
+    # vintage code is silently corrupted and all regime-model
+    # training is invalid.
+    #
+    # 2020-05-15 is chosen because it's ~1 month after the May 8
+    # initial release, long enough for the first-release value to
+    # be the dominant revision but before any subsequent benchmark
+    # revisions that would have moved it.
+    unrate_vintage = get_series(
+        "UNRATE",
+        start=dt.date(2020, 4, 1),
+        end=dt.date(2020, 4, 30),
+        vintage_date=dt.date(2020, 5, 15),
+    )
+    assert not unrate_vintage.empty
+    assert abs(unrate_vintage.iloc[0] - 14.7) < 0.05, (
+        f"UNRATE for April 2020 as-of vintage 2020-05-15 expected "
+        f"~14.7% (first release), got {unrate_vintage.iloc[0]}. "
+        f"If this fails, the vintage query is returning the LATEST "
+        f"revision instead of the point-in-time value — this is the "
+        f"look-ahead-bias guardrail and is load-bearing."
     )
