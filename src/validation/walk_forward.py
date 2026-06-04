@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+from dateutil.relativedelta import relativedelta
 
 logger = logging.getLogger(__name__)
 
@@ -185,9 +186,149 @@ class WalkForwardCV:
     def split(self, dates: pd.DatetimeIndex) -> Iterator[Fold]:
         """Yield Fold objects with full date metadata and row indices.
 
-        Not yet implemented — phase 1 commit 2 lands this.
+        Args:
+            dates: a sorted DatetimeIndex of observation dates. For
+                long-format input (the screener), pass
+                `df["as_of_date"].drop_duplicates().sort_values()` and
+                use split_long() instead so the indices map to all rows
+                with each date.
+
+        Yields:
+            Fold(fold_id, train_*, embargo_*, test_*, vintage_date,
+                 train_indices, test_indices). fold_id is the
+                zero-indexed yield order, not the internal step number,
+                so consumers see sequential 0, 1, 2, ... even when
+                intermediate folds were dropped due to empty windows.
+
+        Raises:
+            ValueError: dates is empty, not monotonic increasing, or
+                spans less than train_period + embargo + test_period
+                months (no fold is possible).
         """
-        raise NotImplementedError("split() lands in the next commit")
+        if len(dates) == 0:
+            raise ValueError("dates is empty")
+        if not dates.is_monotonic_increasing:
+            raise ValueError(
+                "dates must be monotonic increasing. The harness does not "
+                "auto-sort because doing so silently could hide a "
+                "data-pipeline bug."
+            )
+
+        data_start = dates[0].date()
+        data_end = dates[-1].date()
+
+        # Verify the data span fits at least one fold (fold 0's
+        # test_end must be <= data_end). We compute it explicitly so the
+        # error message includes the actual spans.
+        fold0_test_end = (
+            data_start
+            + relativedelta(
+                months=self.train_period + self.embargo + self.test_period
+            )
+            - dt.timedelta(days=1)
+        )
+        if fold0_test_end > data_end:
+            min_months = self.train_period + self.embargo + self.test_period
+            raise ValueError(
+                f"Data span too short for the configuration: data covers "
+                f"{data_start} to {data_end}, need at least {min_months} "
+                f"months (train_period={self.train_period} + "
+                f"embargo={self.embargo} + test_period={self.test_period}). "
+                f"Extend the data range or reduce the periods."
+            )
+
+        step_id = 0  # advances on every iteration, even when fold dropped
+        yielded = 0  # the user-visible Fold.fold_id
+
+        while True:
+            train_start, train_end = self._train_window(data_start, step_id)
+            embargo_start = train_end + dt.timedelta(days=1)
+            embargo_end = embargo_start + relativedelta(months=self.embargo)
+            test_start = embargo_end
+            test_end = (
+                test_start
+                + relativedelta(months=self.test_period)
+                - dt.timedelta(days=1)
+            )
+
+            # For sliding mode, the train window itself can pass data_end.
+            if train_end > data_end:
+                return
+
+            # Does this fold's test window fit in available data?
+            if test_end > data_end:
+                if self.strict_period:
+                    return
+                # strict_period=False handling lands in commit 3.
+                return
+
+            # Map dates to row indices.
+            train_mask = (dates >= pd.Timestamp(train_start)) & (
+                dates <= pd.Timestamp(train_end)
+            )
+            test_mask = (dates >= pd.Timestamp(test_start)) & (
+                dates <= pd.Timestamp(test_end)
+            )
+            train_indices = np.where(train_mask)[0]
+            test_indices = np.where(test_mask)[0]
+
+            # Drop folds whose train or test window falls in a data gap.
+            if len(train_indices) == 0 or len(test_indices) == 0:
+                logger.info(
+                    "WalkForwardCV: dropping step %d (train [%s, %s] -> %d rows, "
+                    "test [%s, %s] -> %d rows). Likely a gap in the input "
+                    "date index.",
+                    step_id,
+                    train_start,
+                    train_end,
+                    len(train_indices),
+                    test_start,
+                    test_end,
+                    len(test_indices),
+                )
+                step_id += 1
+                continue
+
+            yield Fold(
+                fold_id=yielded,
+                train_start=train_start,
+                train_end=train_end,
+                embargo_start=embargo_start,
+                embargo_end=embargo_end,
+                test_start=test_start,
+                test_end=test_end,
+                vintage_date=test_start,
+                train_indices=train_indices,
+                test_indices=test_indices,
+            )
+            yielded += 1
+            step_id += 1
+
+    def _train_window(
+        self, data_start: dt.date, step_id: int
+    ) -> tuple[dt.date, dt.date]:
+        """Compute (train_start, train_end) for step_id.
+
+        Expanding: train_start fixed at data_start, train_end grows
+            by step months per fold.
+        Sliding: both bounds slide forward by step months per fold;
+            window length stays train_period.
+        """
+        if self.expanding:
+            train_start = data_start
+            train_end = (
+                data_start
+                + relativedelta(months=self.train_period + step_id * self.step)
+                - dt.timedelta(days=1)
+            )
+        else:
+            train_start = data_start + relativedelta(months=step_id * self.step)
+            train_end = (
+                train_start
+                + relativedelta(months=self.train_period)
+                - dt.timedelta(days=1)
+            )
+        return train_start, train_end
 
     def summary(self, dates: pd.DatetimeIndex) -> str:
         """Return an ASCII table of the fold structure.
