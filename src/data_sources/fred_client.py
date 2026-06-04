@@ -24,8 +24,13 @@ LATEST_TTL = dt.timedelta(hours=24)
 
 # Series inventory. Keyed by FRED series ID. `is_target=True` marks
 # USREC as ground truth — NEVER include it in the feature matrix.
-# `resample` is the per-series rule for monthly harmonization;
-# "last" means as-of-month-end forward-fill (the default).
+# `resample` is the per-series rule for monthly harmonization:
+#   "ffill" (default): take last observation <= month-end, forward-fill
+#       across gaps. Matches as-of-date trader semantics.
+#   "last": last observation in the month, NaN if none. Stricter than
+#       ffill — does not carry values across empty months.
+#   "mean": within-month average. For series where the period-average
+#       interpretation is preferred (e.g., monthly mean of a daily rate).
 #
 # See docs/design/fred_client.md for the full rationale per series.
 REGIME_SERIES: dict[str, dict] = {
@@ -35,28 +40,28 @@ REGIME_SERIES: dict[str, dict] = {
         "category": "yield_curve",
         "frequency": "D", "units": "%",
         "source": "Board of Governors via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "DGS2": {
         "name": "2-Year Treasury Constant Maturity Rate",
         "category": "yield_curve",
         "frequency": "D", "units": "%",
         "source": "Board of Governors via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "T10Y2Y": {
         "name": "10-Year minus 2-Year Treasury Spread",
         "category": "yield_curve",
         "frequency": "D", "units": "%",
         "source": "FRED (computed from DGS10/DGS2)",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "T10Y3M": {
         "name": "10-Year minus 3-Month Treasury Spread",
         "category": "yield_curve",
         "frequency": "D", "units": "%",
         "source": "FRED (computed)",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     # --- Credit -------------------------------------------------------
     "BAMLH0A0HYM2": {
@@ -64,14 +69,14 @@ REGIME_SERIES: dict[str, dict] = {
         "category": "credit",
         "frequency": "D", "units": "%",
         "source": "ICE Data Indices via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "BAA10Y": {
         "name": "Moody's Baa Corporate Bond Yield minus 10Y Treasury",
         "category": "credit",
         "frequency": "D", "units": "%",
         "source": "Moody's / FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     # --- Activity / Labor --------------------------------------------
     "UNRATE": {
@@ -79,35 +84,35 @@ REGIME_SERIES: dict[str, dict] = {
         "category": "activity",
         "frequency": "M", "units": "%",
         "source": "BLS via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "ICSA": {
         "name": "Initial Jobless Claims",
         "category": "activity",
         "frequency": "W", "units": "count",
         "source": "DOL via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "PAYEMS": {
         "name": "Total Nonfarm Payrolls",
         "category": "activity",
         "frequency": "M", "units": "thousand",
         "source": "BLS via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "INDPRO": {
         "name": "Industrial Production Index",
         "category": "activity",
         "frequency": "M", "units": "index",
         "source": "Board of Governors via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "HOUST": {
         "name": "Housing Starts",
         "category": "activity",
         "frequency": "M", "units": "thousand SAAR",
         "source": "Census Bureau via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     # --- Rates / Money -----------------------------------------------
     "FEDFUNDS": {
@@ -115,14 +120,14 @@ REGIME_SERIES: dict[str, dict] = {
         "category": "rates",
         "frequency": "M", "units": "%",
         "source": "Board of Governors via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "M2SL": {
         "name": "M2 Money Stock",
         "category": "rates",
         "frequency": "M", "units": "$ billion",
         "source": "Board of Governors via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     # --- Inflation ---------------------------------------------------
     "CPIAUCSL": {
@@ -130,21 +135,21 @@ REGIME_SERIES: dict[str, dict] = {
         "category": "inflation",
         "frequency": "M", "units": "index",
         "source": "BLS via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "CPILFESL": {
         "name": "Core CPI (ex food and energy)",
         "category": "inflation",
         "frequency": "M", "units": "index",
         "source": "BLS via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "PCEPILFE": {
         "name": "Core PCE Price Index",
         "category": "inflation",
         "frequency": "M", "units": "index",
         "source": "BEA via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     # --- Market internals --------------------------------------------
     "VIXCLS": {
@@ -152,28 +157,28 @@ REGIME_SERIES: dict[str, dict] = {
         "category": "market_internals",
         "frequency": "D", "units": "level",
         "source": "CBOE via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "DTWEXBGS": {
         "name": "Trade-Weighted Broad Dollar Index",
         "category": "market_internals",
         "frequency": "D", "units": "index",
         "source": "Board of Governors via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "DCOILWTICO": {
         "name": "WTI Crude Oil Spot Price",
         "category": "market_internals",
         "frequency": "D", "units": "USD/bbl",
         "source": "EIA via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     "UMCSENT": {
         "name": "University of Michigan Consumer Sentiment",
         "category": "market_internals",
         "frequency": "M", "units": "index",
         "source": "University of Michigan via FRED",
-        "is_target": False, "resample": "last",
+        "is_target": False, "resample": "ffill",
     },
     # --- Ground truth (label, NOT a feature) -------------------------
     # USREC is the NBER-based recession indicator. It is TARGET DATA
@@ -185,7 +190,7 @@ REGIME_SERIES: dict[str, dict] = {
         "category": "ground_truth",
         "frequency": "M", "units": "0/1",
         "source": "NBER via FRED",
-        "is_target": True, "resample": "last",
+        "is_target": True, "resample": "ffill",
     },
 }
 
@@ -330,6 +335,24 @@ def get_series(
                 end,
             )
     return series
+
+
+def list_series(category: str | None = None) -> pd.DataFrame:
+    """Return REGIME_SERIES as a DataFrame for inspection.
+
+    Args:
+        category: optional filter, e.g., "yield_curve". Returns rows
+            whose category matches exactly. None = all series.
+
+    Returns:
+        DataFrame indexed by series_id with columns: name, category,
+        frequency, units, source, is_target, resample.
+    """
+    df = pd.DataFrame.from_dict(REGIME_SERIES, orient="index")
+    df.index.name = "series_id"
+    if category is not None:
+        df = df[df["category"] == category]
+    return df
 
 
 def validate_api_key(probe: bool = False) -> None:

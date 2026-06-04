@@ -18,6 +18,7 @@ from src.data_sources.fred_client import (
     _MISSING_KEY_MESSAGE,
     _reset_client_for_testing,
     get_series,
+    list_series,
     validate_api_key,
 )
 
@@ -67,6 +68,40 @@ def test_regime_series_inventory_shape():
     required = {"name", "category", "frequency", "units", "source", "is_target", "resample"}
     for sid, meta in REGIME_SERIES.items():
         assert required <= set(meta.keys()), f"{sid} missing fields"
+
+
+def test_regime_series_default_resample_is_ffill():
+    """Default resample for all series is 'ffill' per phase-2 contract."""
+    for sid, meta in REGIME_SERIES.items():
+        assert meta["resample"] == "ffill", (
+            f"{sid} has resample={meta['resample']!r}; expected 'ffill' as "
+            f"the documented default. Per-series overrides should be made "
+            f"deliberately, not by default."
+        )
+
+
+def test_list_series_returns_full_inventory():
+    df = list_series()
+    assert len(df) == len(REGIME_SERIES)
+    # Index name and required columns present.
+    assert df.index.name == "series_id"
+    expected_cols = {"name", "category", "frequency", "units", "source", "is_target", "resample"}
+    assert expected_cols <= set(df.columns)
+    # USREC is in the unfiltered listing.
+    assert "USREC" in df.index
+
+
+def test_list_series_filters_by_category():
+    df = list_series(category="yield_curve")
+    expected_ids = {sid for sid, m in REGIME_SERIES.items() if m["category"] == "yield_curve"}
+    assert set(df.index) == expected_ids
+    # No mixing — none of the returned rows are from other categories.
+    assert (df["category"] == "yield_curve").all()
+
+
+def test_list_series_unknown_category_returns_empty():
+    df = list_series(category="not_a_category")
+    assert len(df) == 0
 
 
 def test_validate_api_key_missing_raises_with_clear_message():
