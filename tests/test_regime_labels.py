@@ -2,12 +2,18 @@
 
 Unit tests use synthetic feature rows to exercise each rule branch
 and the cascade ordering. Integration tests against real FRED data
-live in a separate slow-marked test file (added in a follow-up
-commit).
+(in the second half of this file, marked @pytest.mark.slow) confirm
+the rules produce sensible labels for known historical episodes —
+COVID Contraction, 2018-2019 yield curve inversion as Late-cycle,
+post-COVID Recovery.
 """
+
+import datetime as dt
+import os
 
 import pandas as pd
 import pytest
+from dotenv import load_dotenv
 
 from src.feature_engineering.regime_labels import (
     CONTRACTION_NFCI_THRESHOLD,
@@ -269,3 +275,138 @@ def test_compute_labels_raises_on_non_datetime_index():
     )
     with pytest.raises(ValueError, match="DatetimeIndex"):
         compute_labels(matrix)
+
+
+# ---------- Integration tests against real FRED (slow) --------------------
+
+
+@pytest.fixture
+def fred_features_2014_2025():
+    """Real FRED feature matrix for 2014-2025.
+
+    Skips cleanly if FRED_API_KEY is not in .env. The slow tests
+    using this fixture run end-to-end against fja05680/FRED and
+    confirm the rules produce sensible labels on known historical
+    episodes."""
+    # Match the override=True pattern from the FRED client's slow test
+    # so the autouse fixture's empty-string FRED_API_KEY default gets
+    # superseded by the .env value.
+    load_dotenv(override=True)
+    if not os.environ.get("FRED_API_KEY", "").strip():
+        pytest.skip("FRED_API_KEY not set in .env")
+    # Avoid the fred client's lazy-singleton caching the empty-key state
+    # from any earlier test in this run.
+    from src.data_sources.fred_client import (
+        _reset_client_for_testing,
+        get_features_matrix,
+    )
+
+    _reset_client_for_testing()
+    return get_features_matrix(
+        start=dt.date(2014, 1, 1), end=dt.date(2025, 12, 31)
+    )
+
+
+@pytest.mark.slow
+def test_real_data_covid_window_is_contraction(fred_features_2014_2025):
+    """March-June 2020 should label as Contraction (4 months).
+
+    March-April are NBER USREC=1 (the credit-stress arm triggers).
+    May-June are post-NBER-recession-end per NBER's June 2020
+    announcement, but unemployment was still 13.2% and 11.0% — the
+    elevated-unemployment OR-clause keeps them Contraction.
+    Critical: if the OR-clause regressed, May-June would mislabel
+    Expansion and the rule cascade would be silently broken on the
+    most important recession in the dataset.
+    """
+    labels = compute_labels(fred_features_2014_2025)
+    covid = labels.loc["2020-03-01":"2020-06-30"]
+    assert len(covid) == 4
+    assert (covid == "Contraction").all(), (
+        f"Expected all Contraction in Mar-Jun 2020; got {covid.tolist()}"
+    )
+
+
+@pytest.mark.slow
+def test_real_data_2018_2019_inversion_mostly_late_cycle(
+    fred_features_2014_2025,
+):
+    """The Dec 2018 - Nov 2019 inversion era should label
+    predominantly as Late-cycle. We allow some boundary flicker
+    (Feb 2019 and Dec 2019 are honest threshold-boundary artifacts
+    per owner decision) but at least 80% of months in the window
+    should be Late-cycle."""
+    labels = compute_labels(fred_features_2014_2025)
+    window = labels.loc["2018-12-01":"2019-11-30"]
+    late_cycle_pct = (window == "Late-cycle").mean()
+    assert late_cycle_pct >= 0.80, (
+        f"Expected >=80% Late-cycle in Dec 2018-Nov 2019; "
+        f"got {late_cycle_pct:.0%}. Labels: {window.tolist()}"
+    )
+
+
+@pytest.mark.slow
+def test_real_data_post_covid_recovery_mostly_recovery(
+    fred_features_2014_2025,
+):
+    """Oct 2020 - Aug 2021 should label predominantly Recovery — the
+    period when unemployment was declining from its 14.8% COVID peak
+    but still elevated vs the pre-shock 3.5% cycle low."""
+    labels = compute_labels(fred_features_2014_2025)
+    window = labels.loc["2020-10-01":"2021-08-31"]
+    recovery_pct = (window == "Recovery").mean()
+    assert recovery_pct >= 0.80, (
+        f"Expected >=80% Recovery in Oct 2020-Aug 2021; "
+        f"got {recovery_pct:.0%}. Labels: {window.tolist()}"
+    )
+
+
+@pytest.mark.slow
+def test_real_data_2024_inversion_era_mostly_late_cycle(
+    fred_features_2014_2025,
+):
+    """Feb-Jun 2024 should label predominantly Late-cycle — deeply
+    inverted curve with unrate just slightly above cycle low. This
+    is exactly the regime the threshold bump from 0.5 to 0.7
+    captured; if a regression brings the threshold back, this fails.
+    """
+    labels = compute_labels(fred_features_2014_2025)
+    window = labels.loc["2024-02-01":"2024-06-30"]
+    late_cycle_pct = (window == "Late-cycle").mean()
+    assert late_cycle_pct >= 0.80, (
+        f"Expected >=80% Late-cycle in Feb-Jun 2024; "
+        f"got {late_cycle_pct:.0%}. Labels: {window.tolist()}"
+    )
+
+
+@pytest.mark.slow
+def test_real_data_label_distribution_within_bounds(fred_features_2014_2025):
+    """Overall distribution sanity bounds. Wider than the unit-test
+    "all Expansion" check; catches large regressions where one rule
+    starts firing for half the dataset or never fires at all."""
+    labels = compute_labels(fred_features_2014_2025)
+    fractions = labels.value_counts(normalize=True)
+    # Expansion dominates but is not >75% (otherwise Late-cycle's
+    # contribution is too small).
+    assert 0.40 < fractions.get("Expansion", 0.0) < 0.75
+    # Late-cycle is meaningful but not overwhelming.
+    assert 0.15 < fractions.get("Late-cycle", 0.0) < 0.45
+    # Contraction is rare (only COVID in our window).
+    assert fractions.get("Contraction", 0.0) < 0.10
+    # Recovery is uncommon but must be present.
+    assert fractions.get("Recovery", 0.0) > 0.0
+
+
+@pytest.mark.slow
+def test_real_data_2014_2017_uniformly_expansion(fred_features_2014_2025):
+    """2014-2017 was uniform post-GFC expansion in the historical
+    record. The rules should label every month in that 4-year window
+    as Expansion. Any other label here indicates a rule that's
+    over-triggering on benign conditions."""
+    labels = compute_labels(fred_features_2014_2025)
+    window = labels.loc["2014-01-01":"2017-12-31"]
+    non_expansion = window[window != "Expansion"]
+    assert len(non_expansion) == 0, (
+        f"Expected all Expansion in 2014-2017; found {len(non_expansion)} "
+        f"non-Expansion months: {non_expansion.to_dict()}"
+    )
