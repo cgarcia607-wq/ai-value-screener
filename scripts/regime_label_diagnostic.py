@@ -35,30 +35,62 @@ def derive_label_features(matrix: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(index=matrix.index)
     df["unrate"] = matrix["UNRATE"]
     df["unrate_3mo_change"] = df["unrate"] - df["unrate"].shift(3)
-    df["unrate_12mo_max"] = df["unrate"].rolling(window=12, min_periods=1).max()
+    df["unrate_6mo_change"] = df["unrate"] - df["unrate"].shift(6)
+    df["unrate_12mo_min"] = df["unrate"].rolling(window=12, min_periods=1).min()
     df["unrate_24mo_min"] = df["unrate"].rolling(window=24, min_periods=1).min()
-    df["unrate_above_min"] = df["unrate"] - df["unrate_24mo_min"]
+    df["unrate_above_24mo_min"] = df["unrate"] - df["unrate_24mo_min"]
     df["t10y3m"] = matrix["T10Y3M"]
     df["nfcicredit"] = matrix["NFCICREDIT"]
     return df
 
 
 def regime_label(row: pd.Series) -> str:
-    """Apply the four-rule cascade; return one of E/L/C/R."""
-    # 1. Contraction: unemployment spike + credit stress
-    if row["unrate_3mo_change"] > 0.5 and row["nfcicredit"] > 0.5:
+    """Apply the four-rule cascade; return one of E/L/C/R.
+
+    The "+1.5 still-elevated unemployment" threshold appears in BOTH
+    Contraction (12-month lookback) and Recovery (24-month lookback).
+    Same threshold on both sides means the elevated-unemployment zone
+    is a single band; the direction of change (rising vs falling)
+    distinguishes which regime applies. Contraction uses the shorter
+    12-month lookback because new shocks are detected against recent
+    floors; Recovery uses 24-month lookback because "still elevated"
+    is measured against the pre-shock baseline that may pre-date the
+    current shock by a year+.
+    """
+    # 1. Contraction: 3-month unemployment spike combined with EITHER
+    #    credit stress OR elevated unemployment level. The credit-stress
+    #    clause catches the initial shock; the elevation clause keeps
+    #    Contraction labeled through the high-unemployment plateau
+    #    after credit has stabilized (e.g., May-June 2020).
+    if row["unrate_3mo_change"] > 0.5 and (
+        row["nfcicredit"] > 0.5
+        or row["unrate"] > row["unrate_12mo_min"] + 1.5
+    ):
         return "Contraction"
-    # 2. Recovery: coming off elevated unemployment
-    if row["unrate_12mo_max"] > 6.0 and row["unrate_3mo_change"] < 0:
-        return "Recovery"
-    # 3. Late-cycle: inversion + cycle-low unemployment + benign credit
+
+    # 2. Recovery: still elevated vs 24-month low, trending down over
+    #    6 months. The 6-month smoothing prevents flicker from month-
+    #    to-month noise. The 24-month lookback for the "still elevated"
+    #    reference avoids false-Recovery during normal expansion when
+    #    unemployment briefly ticks up and then declines.
     if (
-        row["t10y3m"] < 0
-        and row["unrate_above_min"] < 0.5
+        row["unrate"] > row["unrate_24mo_min"] + 1.5
+        and row["unrate_6mo_change"] < 0
+    ):
+        return "Recovery"
+
+    # 3. Late-cycle: yield curve flat or inverted (t10y3m < 0.25,
+    #    threshold locked after inspecting Nov 2018-Aug 2019 and
+    #    Apr-Jul 2022 episodes), unemployment near cycle low, credit
+    #    not yet stressed.
+    if (
+        row["t10y3m"] < 0.25
+        and row["unrate_above_24mo_min"] < 0.5
         and row["nfcicredit"] < 0.5
     ):
         return "Late-cycle"
-    # 4. Expansion: default
+
+    # 4. Default: Expansion.
     return "Expansion"
 
 
@@ -141,10 +173,13 @@ def main() -> None:
         inv_window = display.loc["2018-06-01":"2019-12-31"]
         for date, row in inv_window.iterrows():
             inv_flag = "INV" if row["t10y3m"] < 0 else "   "
+            above_min = (
+                row["unrate"] - label_features["unrate_24mo_min"].loc[date]
+            )
             print(
                 f"  {date.date().isoformat()}: {row['label']:>11} "
                 f"(t10y3m={row['t10y3m']:+.2f} {inv_flag}, "
-                f"unrate_above_min={row['unrate'] - label_features['unrate_24mo_min'].loc[date]:.2f})"
+                f"unrate_above_min={above_min:.2f})"
             )
     except KeyError:
         print("  (no data in inversion window)")
@@ -155,13 +190,31 @@ def main() -> None:
     try:
         rec_window = display.loc["2020-06-01":"2021-12-31"]
         for date, row in rec_window.iterrows():
+            d6 = label_features["unrate_6mo_change"].loc[date]
             print(
                 f"  {date.date().isoformat()}: {row['label']:>11} "
-                f"(unrate={row['unrate']:.1f}%, dUnr={row['d_unrate']:+.2f}, "
-                f"max12={label_features['unrate_12mo_max'].loc[date]:.1f})"
+                f"(unrate={row['unrate']:.1f}%, dUnr_3mo={row['d_unrate']:+.2f}, "
+                f"dUnr_6mo={d6:+.2f})"
             )
     except KeyError:
         print("  (no data in recovery window)")
+
+    # --- Transitions per year ---------------------------------------------
+    print()
+    print("=== Regime transitions per calendar year (coherence metric) ===")
+    print("    Healthy: 2-4 transitions/year. Higher = label flicker.")
+    transitions_by_year: dict[int, int] = {}
+    prev_label = None
+    for date, row in display.iterrows():
+        year = date.year
+        transitions_by_year.setdefault(year, 0)
+        if prev_label is not None and row["label"] != prev_label:
+            transitions_by_year[year] += 1
+        prev_label = row["label"]
+    for year in sorted(transitions_by_year):
+        print(f"  {year}: {transitions_by_year[year]} transitions")
+    avg = sum(transitions_by_year.values()) / len(transitions_by_year)
+    print(f"  Average: {avg:.1f} transitions/year")
 
     # --- NBER overlap validation ------------------------------------------
     print()
