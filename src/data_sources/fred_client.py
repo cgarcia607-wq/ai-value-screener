@@ -235,15 +235,59 @@ def _cache_path(series_id: str, vintage_date: dt.date | None) -> Path:
     return CACHE_DIR / f"{series_id}__{suffix}.parquet"
 
 
-def _cache_is_fresh(path: Path, vintage_date: dt.date | None) -> bool:
-    """Vintage cache never expires; latest cache expires after LATEST_TTL."""
+def _cache_is_fresh(
+    path: Path,
+    vintage_date: dt.date | None,
+    start: dt.date | None = None,
+    end: dt.date | None = None,
+) -> bool:
+    """Decide whether the cached parquet at `path` can serve the request.
+
+    Two invariants must hold:
+
+    1. **TTL** (latest caches only) — files older than LATEST_TTL are
+       stale. Vintage caches are immutable, no TTL.
+    2. **Range coverage** — the cached data must cover the requested
+       [start, end] window. Without this check, a cache populated by an
+       earlier narrow-range fetch (e.g., UNRATE 2020-01 to 2020-12)
+       would be served for a later wider request (e.g., 2014-2025), and
+       the resulting Series would silently lack history outside the
+       cached range. The forward-filling in `get_features_matrix` would
+       then propagate stale values across all later month-ends, looking
+       superficially correct but being silently wrong. See
+       docs/design/fred_client.md "Cache range-coverage invariant".
+
+    The range check reads the parquet to inspect the index extent. This
+    is a small file (~few KB) and the load is cheap; the subsequent
+    `_load_cache` in the calling code does a second read, accepted as
+    cleaner than threading the loaded DataFrame through.
+    """
     if not path.exists():
         return False
-    if vintage_date is not None:
+    if vintage_date is None:
+        mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc)
+        age = dt.datetime.now(dt.timezone.utc) - mtime
+        if age >= LATEST_TTL:
+            return False
+    if start is None and end is None:
         return True
-    mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc)
-    age = dt.datetime.now(dt.timezone.utc) - mtime
-    return age < LATEST_TTL
+    try:
+        df = pd.read_parquet(path)
+    except Exception:
+        # Corrupt cache file; treat as stale, force refetch.
+        return False
+    if len(df) == 0:
+        # An empty cache can only satisfy a range-less request. For an
+        # explicit range, we have no evidence the empty result is right
+        # for that range — refetch.
+        return False
+    cached_min = df.index.min().date()
+    cached_max = df.index.max().date()
+    if start is not None and cached_min > start:
+        return False
+    if end is not None and cached_max < end:
+        return False
+    return True
 
 
 def _load_cache(path: Path) -> pd.Series:
@@ -315,7 +359,7 @@ def get_series(
         ValueError: if FRED rejects the series_id.
     """
     cache_path = _cache_path(series_id, vintage_date)
-    if _cache_is_fresh(cache_path, vintage_date):
+    if _cache_is_fresh(cache_path, vintage_date, start, end):
         series = _load_cache(cache_path)
     else:
         series = _fetch_from_fred(series_id, start, end, vintage_date)

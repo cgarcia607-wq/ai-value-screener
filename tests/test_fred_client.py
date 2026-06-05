@@ -320,6 +320,118 @@ def test_get_series_latest_cache_expires_after_ttl(monkeypatch):
     assert fred.get_series.call_count == 2
 
 
+def test_get_series_cache_invalidated_when_narrower_than_request(monkeypatch):
+    """Cache populated by a narrow-range fetch must NOT be served for a
+    wider-range request — even if within TTL.
+
+    Regression for the silent data corruption surfaced by the regime
+    label diagnostic: UNRATE was cached with data only through 2020-12
+    (from an earlier slow integration test), and a later
+    get_features_matrix(start=2014, end=2025) hit that cache (within
+    24h TTL) and got back a Series missing all post-2020 data. The
+    matrix's ffill resample then propagated stale December-2020
+    values across all later month-ends, looking superficially right
+    but being silently wrong.
+    """
+    narrow = _make_series({"2020-01-15": 4.0, "2020-12-15": 6.7})
+    wide = _make_series({
+        "2014-01-15": 6.6,
+        "2020-01-15": 4.0,
+        "2020-12-15": 6.7,
+        "2025-12-15": 4.2,
+    })
+
+    fred = MagicMock()
+    fred.get_series.side_effect = [narrow, wide]
+    _install_mock_client(monkeypatch, fred)
+
+    # First call: narrow range -> populates cache with narrow data.
+    first = get_series(
+        "UNRATE",
+        start=dt.date(2020, 1, 1),
+        end=dt.date(2020, 12, 31),
+    )
+    assert first.index.min().year == 2020
+    assert fred.get_series.call_count == 1
+
+    # Second call: wider range. The cache covers only 2020 but we want
+    # 2014-2025. _cache_is_fresh must reject the cache and trigger
+    # refetch.
+    second = get_series(
+        "UNRATE",
+        start=dt.date(2014, 1, 1),
+        end=dt.date(2025, 12, 31),
+    )
+    assert fred.get_series.call_count == 2, (
+        "Cache should have been invalidated due to insufficient range "
+        "coverage; expected a second refetch."
+    )
+    # Result includes pre-2020 data (the bug would have returned only
+    # 2020 data forward-filled).
+    assert second.index.min().year == 2014
+
+
+def test_get_series_cache_serves_request_within_cached_range(monkeypatch):
+    """Inverse of the regression: when the cache covers the requested
+    range (cache 2014-2025, request 2020), serve from cache."""
+    wide = _make_series({
+        "2014-01-15": 1.0,
+        "2020-06-15": 2.0,
+        "2025-12-15": 3.0,
+    })
+    fred = MagicMock()
+    fred.get_series.return_value = wide
+    _install_mock_client(monkeypatch, fred)
+
+    # First: wide-range fetch populates cache.
+    get_series(
+        "UNRATE", start=dt.date(2014, 1, 1), end=dt.date(2025, 12, 31)
+    )
+    # Second: narrower range fully inside the cached range.
+    get_series(
+        "UNRATE", start=dt.date(2020, 1, 1), end=dt.date(2020, 12, 31)
+    )
+
+    # Cache hit on the second call -> still only one underlying fetch.
+    assert fred.get_series.call_count == 1
+
+
+def test_get_series_cache_invalidated_when_start_before_cached(monkeypatch):
+    """Cache covers 2020-2025; request for 2014-2025 must refetch."""
+    later = _make_series({"2020-01-15": 1.0, "2025-12-15": 2.0})
+    earlier_plus_later = _make_series({
+        "2014-01-15": 0.5,
+        "2020-01-15": 1.0,
+        "2025-12-15": 2.0,
+    })
+    fred = MagicMock()
+    fred.get_series.side_effect = [later, earlier_plus_later]
+    _install_mock_client(monkeypatch, fred)
+
+    get_series("UNRATE", start=dt.date(2020, 1, 1), end=dt.date(2025, 12, 31))
+    get_series("UNRATE", start=dt.date(2014, 1, 1), end=dt.date(2025, 12, 31))
+
+    assert fred.get_series.call_count == 2
+
+
+def test_get_series_cache_invalidated_when_end_after_cached(monkeypatch):
+    """Cache covers 2014-2020; request for 2014-2025 must refetch."""
+    earlier = _make_series({"2014-01-15": 0.5, "2020-12-15": 1.5})
+    full = _make_series({
+        "2014-01-15": 0.5,
+        "2020-12-15": 1.5,
+        "2025-12-15": 2.5,
+    })
+    fred = MagicMock()
+    fred.get_series.side_effect = [earlier, full]
+    _install_mock_client(monkeypatch, fred)
+
+    get_series("UNRATE", start=dt.date(2014, 1, 1), end=dt.date(2020, 12, 31))
+    get_series("UNRATE", start=dt.date(2014, 1, 1), end=dt.date(2025, 12, 31))
+
+    assert fred.get_series.call_count == 2
+
+
 def test_get_series_vintage_cache_never_expires(monkeypatch):
     """Vintage cache is used regardless of file age."""
     fred = MagicMock()

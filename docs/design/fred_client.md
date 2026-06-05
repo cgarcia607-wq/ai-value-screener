@@ -305,15 +305,42 @@ All under `data/raw/fred/`, all gitignored (covered by the existing
 
 ### Cache invalidation
 
-If `__latest` is stale and the network is unreachable, log WARNING and
-return the stale cached value. Better than failing for an offline rerun
-when the values are 25 hours old. This is the same batch-degradation
-pattern from CLAUDE.md.
+A cache file is considered fresh only when **both** invariants hold:
 
-If `__vintage` files would somehow disagree across machines (shouldn't
-happen — FRED's vintage data is immutable, by definition), a future
-audit-mode flag could hash-compare across re-fetches. Out of scope for
-v1.
+1. **TTL** — `__latest` files within 24 hours; `__vintage_<date>`
+   files are immutable, no TTL.
+2. **Range coverage** — the cached parquet's index range must cover
+   the request's `[start, end]` window. If the requested `start` is
+   earlier than the cached minimum date, or the requested `end` is
+   later than the cached maximum date, the cache is stale and
+   `get_series` refetches the full requested range.
+
+The range-coverage invariant matters because the cache is keyed by
+`(series_id, vintage_date)` only — not by date range. Without the
+coverage check, an earlier narrow-range fetch (e.g., UNRATE
+2020-01 to 2020-12 from a test fixture or one-off REPL) would
+populate the cache, and a later wider request (e.g., 2014 to 2025)
+would hit the cache within TTL and silently return a Series missing
+all data outside the original range. The forward-filling in
+`get_features_matrix` would then propagate stale boundary values
+across all later month-ends, looking superficially right but being
+silently wrong.
+
+This was a real bug, caught only because the regime label
+diagnostic eyeballed the output and noticed UNRATE pinned at 6.7%
+from 2020-12 through 2025-12. Regression test:
+`test_get_series_cache_invalidated_when_narrower_than_request`.
+
+If `__latest` is stale and the network is unreachable, log WARNING
+and return the stale cached value (offline batch-degradation
+pattern). This applies to TTL-stale caches only — range-stale
+caches must always refetch, since serving a known-incomplete range
+is a correctness violation, not a freshness inconvenience.
+
+If `__vintage` files would somehow disagree across machines
+(shouldn't happen — FRED's vintage data is immutable, by
+definition), a future audit-mode flag could hash-compare across
+re-fetches. Out of scope for v1.
 
 ## Public API
 
