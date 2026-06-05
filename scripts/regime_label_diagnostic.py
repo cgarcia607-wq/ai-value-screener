@@ -81,11 +81,26 @@ def regime_label(row: pd.Series) -> str:
 
     # 3. Late-cycle: yield curve flat or inverted (t10y3m < 0.25,
     #    threshold locked after inspecting Nov 2018-Aug 2019 and
-    #    Apr-Jul 2022 episodes), unemployment near cycle low, credit
-    #    not yet stressed.
+    #    Apr-Jul 2022 episodes), unemployment near cycle low (within
+    #    0.7pp of 24-month min), credit not yet stressed.
+    #
+    #    The 0.7pp unemployment threshold sits below Recovery's +1.5
+    #    elevation threshold, forming a clean ladder:
+    #      <= 0.7pp from 24mo min  -> "labor market basically OK,
+    #                                  past peak" => Late-cycle-eligible
+    #      0.7-1.5pp                -> ambiguous (classifier expresses
+    #                                  uncertainty between Late-cycle
+    #                                  and Recovery)
+    #      >= 1.5pp                -> "still elevated" => Recovery
+    #                                  (or Contraction if also spiking)
+    #
+    #    Bumped from 0.5 to 0.7 because the 2024-2025 era had a deeply
+    #    inverted curve but unrate had drifted ~0.5pp off cycle low —
+    #    structurally Late-cycle, but the old 0.5 cutoff was too tight
+    #    to capture it.
     if (
         row["t10y3m"] < 0.25
-        and row["unrate_above_24mo_min"] < 0.5
+        and row["unrate_above_24mo_min"] < 0.7
         and row["nfcicredit"] < 0.5
     ):
         return "Late-cycle"
