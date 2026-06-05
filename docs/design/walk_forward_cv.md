@@ -61,10 +61,13 @@ training history at 10 years?). Constructor flag: `expanding=True`.
 
 ### Embargo period — flagging a CLAUDE.md inconsistency
 
-CLAUDE.md says "1-month embargo between train and test." This is
-correct for the regime classifier (labels are concurrent — month M's
-regime is determined from month M's macro features) but **wrong for
-the stock screener** (labels are 12-month forward returns).
+CLAUDE.md originally said "1-month embargo between train and test."
+That was wrong for the stock screener (12-month forward labels) and
+also turned out to be wrong for the regime classifier once the
+regime model adopted T+3 forward-looking labels (see
+[regime_classifier.md](regime_classifier.md)). Both updated to use
+embargo = label horizon: 12 months for the screener, 3 months for
+the regime classifier.
 
 Why 1mo is wrong for the screener:
 
@@ -82,9 +85,11 @@ forward label, that means a 12-month embargo. Anything shorter leaks.
 
 **Default per use case**:
 
-- Stock screener: **embargo = 12 months** (matches the label horizon).
-- Regime classifier: embargo = 1 month (matches CLAUDE.md, label is
-  concurrent).
+- Stock screener: **embargo = 12 months** (matches the 12-month
+  forward-return label horizon).
+- Regime classifier: **embargo = 3 months** (matches the T+3
+  forward-looking regime-label horizon — see
+  [regime_classifier.md](regime_classifier.md)).
 
 The harness exposes `embargo` as a constructor parameter; defaults can
 be set per use case at the caller site. The CLAUDE.md inconsistency is
@@ -152,8 +157,9 @@ embargo 12mo, test 12mo, step 12mo) over 2014-01 to 2025-12:
 - Total folds: ~8.
 
 Eight folds is on the low side but reasonable for the data we have.
-The regime classifier with embargo=1mo and ~420 monthly observations
-from 1990 yields ~30 folds — much healthier.
+The regime classifier with embargo=3mo and ~420 monthly observations
+from 1990 yields ~28 folds — still much healthier than the
+screener.
 
 ## Vintage handling
 
@@ -317,8 +323,9 @@ class WalkForwardCV:
         test_period: test window length in months. Default 12.
         embargo: gap between train_end and test_start, in months.
             Must be >= the label horizon. Default 12 for the screener
-            (12-month forward labels); set to 1 for the regime
-            classifier (concurrent labels).
+            (12-month forward labels); set to 3 for the regime
+            classifier (T+3 forward-looking labels per
+            regime_classifier.md).
         step: months to advance per fold. Default 12 — non-overlapping
             test sets.
         expanding: if True, train window grows each fold (default).
@@ -468,17 +475,20 @@ ASCII timeline diagram (the "T T T E T T" style I mocked in the open
 questions) is *not* included — adds visual noise without informational
 value over the table.
 
-## Open questions
+## Open questions — resolved
 
-1. **Embargo for the stock screener — push back on CLAUDE.md.** The
-   "1-month embargo" lock in CLAUDE.md is correct for the regime
-   classifier but wrong for the screener's 12-month forward labels.
-   Proposing the embargo become a per-use-case parameter with these
-   defaults: 12 months for the screener, 1 month for the regime
-   classifier. I'd also propose updating CLAUDE.md to reflect this
-   (the methodology section was written before this design pass).
-   Confirm? If you actually want 1-month for the screener (e.g.,
-   you accept some leakage to get more folds), say so explicitly.
+All resolved by the owner. Numbers 2-7 unchanged from the
+approved-as-written defaults; #1 evolved further after the regime
+classifier design adopted T+3 forward-looking labels (see
+[regime_classifier.md](regime_classifier.md)).
+
+1. **Embargo defaults — resolved, then revised again for T+3.**
+   Original resolution: 12 months for the screener (matching
+   12-month forward-return labels), 1 month for the regime
+   classifier (concurrent labels). After the regime classifier
+   adopted T+3 forward-looking labels, the regime embargo was
+   bumped to 3 months to match the new label horizon. CLAUDE.md
+   and this doc both updated.
 
 2. **Default test horizon = 12 months.** Confirm? Alternatives are 6
    (more folds, overlapping) or 24 (fewer folds, longer evaluation

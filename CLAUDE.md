@@ -62,11 +62,12 @@ tests/                    # pytest, run on every push via GitHub Actions.
   fundamentals in training.
 - **Validation**: walk-forward / expanding-window CV with embargo
   ≥ label horizon — **12 months for the screener** (matching the
-  12-month forward-return label), **1 month for the regime classifier**
-  (concurrent labels). The embargo must be at least as long as the
-  label-computation window or training rows' labels overlap the test
-  period in real time, implicitly leaking test-period outcomes into
-  training. See [docs/design/walk_forward_cv.md](docs/design/walk_forward_cv.md)
+  12-month forward-return label), **3 months for the regime classifier**
+  (matching the T+3 forward-looking regime-label horizon). The
+  embargo must be at least as long as the label-computation window
+  or training rows' labels overlap the test period in real time,
+  implicitly leaking test-period outcomes into training. See
+  [docs/design/walk_forward_cv.md](docs/design/walk_forward_cv.md)
   for the full reasoning. NEVER use `train_test_split` or k-fold on
   time-series data.
 - **Features**: convert raw fundamentals to cross-sectional ranks or z-scores
@@ -89,9 +90,12 @@ tests/                    # pytest, run on every push via GitHub Actions.
 - **Baseline**: always train a logistic regression baseline alongside XGBoost.
   If XGBoost doesn't beat it meaningfully, use the simpler model.
 - **Validation**: same walk-forward CV harness as the stock model,
-  with embargo=1 month (labels are concurrent — month M's regime is
-  determined from month M's macro features, so a 1-month embargo
-  fully prevents leakage).
+  with embargo=3 months (labels are forward-looking: training pair
+  is (features[t], regime_label[t+3]), so the 3-month embargo
+  matches the label horizon and fully prevents leakage of the
+  training rows' T+3 labels into the test window's features).
+  See [docs/design/regime_classifier.md](docs/design/regime_classifier.md)
+  for the forward-looking rationale.
 - **Sample size discipline**: ~35 years of monthly macro data is ~420 obs.
   Be skeptical of complex models. Regularize aggressively.
 
