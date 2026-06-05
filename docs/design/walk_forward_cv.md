@@ -193,6 +193,34 @@ The fold metadata includes `vintage_date` and consumers are encouraged
 to fetch features using it explicitly via, e.g.,
 `get_features_matrix(..., vintage_date=fold.vintage_date)`.
 
+## Boundary anchoring (calendar-month-clean)
+
+All fold-boundary arithmetic uses a calendar-month anchor:
+`anchor = data_start.replace(day=1)` (first day of `data_start`'s month).
+`train_end`, `embargo_end`, `test_start`, and `test_end` are all
+computed as `anchor + N months [- 1 day]`. The user-visible
+`train_start` stays at `data_start` so consumers still see the actual
+first observation date.
+
+Without the anchor, `data_start + N months - 1 day` produces a boundary
+date INSIDE the next calendar month (e.g.,
+`2014-01-31 + 36 months - 1 day = 2017-01-30`, which is in January
+2017 rather than at the end of December 2016). Any business-day-
+adjusted month-end date that happens to fall later in the month than
+the boundary (e.g., `2021-01-31` becomes `2021-01-29` because Jan 31,
+2021 was a Sunday) gets sorted into the wrong fold. The result is
+fold sizes that vary 11-13 months for what should be a uniform
+12-month test horizon, plus data-level gaps that vary 367-423 days
+where they should be ~395 ± 5.
+
+With the anchor, every fold's train ends at the last calendar day of
+the train_period-th month, every embargo runs exactly `embargo` whole
+calendar months, and every test covers exactly `test_period` whole
+calendar months. The `scripts/embargo_check.py` verification script
+confirms this end-to-end against the real
+`data/processed/sp500_membership.parquet` (which uses business-day-
+adjusted month-end dates).
+
 ## Split semantics
 
 Each fold yields a `Fold` object (dataclass) with these fields:
