@@ -217,11 +217,29 @@ class WalkForwardCV:
         data_start = dates[0].date()
         data_end = dates[-1].date()
 
+        # All boundary arithmetic uses an anchor at the FIRST DAY of
+        # data_start's month — not data_start itself. This snaps every
+        # fold's train_end / embargo / test_start / test_end to a
+        # calendar-month boundary, so business-day-adjusted month-end
+        # input dates (e.g., 2021-01-29 because Jan 31, 2021 was a
+        # Sunday) can't leak across fold boundaries.
+        #
+        # Without the anchor, `data_start + N months - 1 day` produces
+        # a boundary date INSIDE the next calendar month
+        # (2014-01-31 + 36mo - 1d = 2017-01-30), so a business-day
+        # Jan 2017 date (2017-01-31) is excluded but a business-day
+        # Jan 2021 date (2021-01-29) is included — wrong, and the
+        # asymmetry produces fold sizes that vary 11-13 months when
+        # they should all be 12.
+        #
+        # The user-visible train_start stays as data_start so consumers
+        # can still see the actual first observation date.
+        anchor = data_start.replace(day=1)
+
         # Verify the data span fits at least one fold (fold 0's
-        # test_end must be <= data_end). We compute it explicitly so the
-        # error message includes the actual spans.
+        # test_end must be <= data_end).
         fold0_test_end = (
-            data_start
+            anchor
             + relativedelta(
                 months=self.train_period + self.embargo + self.test_period
             )
@@ -241,7 +259,9 @@ class WalkForwardCV:
         yielded = 0  # the user-visible Fold.fold_id
 
         while True:
-            train_start, train_end = self._train_window(data_start, step_id)
+            train_start, train_end = self._train_window(
+                data_start, anchor, step_id
+            )
             embargo_start = train_end + dt.timedelta(days=1)
             embargo_end = embargo_start + relativedelta(months=self.embargo)
             test_start = embargo_end
@@ -330,27 +350,35 @@ class WalkForwardCV:
             step_id += 1
 
     def _train_window(
-        self, data_start: dt.date, step_id: int
+        self, data_start: dt.date, anchor: dt.date, step_id: int
     ) -> tuple[dt.date, dt.date]:
         """Compute (train_start, train_end) for step_id.
 
-        Expanding: train_start fixed at data_start, train_end grows
-            by step months per fold.
-        Sliding: both bounds slide forward by step months per fold;
+        Boundary arithmetic uses `anchor` (first day of data_start's
+        month) so train_end always lands on a calendar-month boundary
+        regardless of which day-of-month data_start happens to be.
+        See the boundary-anchor comment in split() for the rationale.
+
+        Expanding: train_start fixed at data_start (the actual first
+            observation date, for user-visible meaning), train_end grows
+            by step months per fold via the anchor.
+        Sliding: train_start slides forward from the anchor each fold;
             window length stays train_period.
         """
         if self.expanding:
             train_start = data_start
             train_end = (
-                data_start
+                anchor
                 + relativedelta(months=self.train_period + step_id * self.step)
                 - dt.timedelta(days=1)
             )
         else:
-            train_start = data_start + relativedelta(months=step_id * self.step)
+            train_start = anchor + relativedelta(months=step_id * self.step)
             train_end = (
-                train_start
-                + relativedelta(months=self.train_period)
+                anchor
+                + relativedelta(
+                    months=self.train_period + step_id * self.step
+                )
                 - dt.timedelta(days=1)
             )
         return train_start, train_end

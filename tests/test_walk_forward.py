@@ -307,16 +307,16 @@ def test_expanding_train_end_advances_by_step(monthly_dates_2014_2025):
 
 def test_expanding_screener_config_fold_count(monthly_dates_2014_2025):
     """Screener defaults on 2014-2025 monthly: train_period=36, embargo=12,
-    test=12, step=12. Hand-computed expectation: 7 folds.
+    test=12, step=12. Hand-computed expectation: 8 folds.
 
-    Reasoning: fold N's test_end = data_start + (36 + N*12 + 12 + 12) months
-    - 1 day = data_start + (60 + 12N) months - 1 day. Need test_end <=
-    2025-12-31. For data_start=2014-01-31, max N with test_end <= data_end
-    is N=6 (test_end=2025-01-30); N=7 gives 2026-01-30 > data_end.
+    With the calendar-month-anchor fix, fold N's test_end = anchor +
+    (60 + 12N) months - 1 day, where anchor = 2014-01-01. Need test_end
+    <= 2025-12-31. Fold 7: anchor + 144 months - 1 day = 2025-12-31,
+    just fits. Fold 8: 2026-12-31, dropped.
     """
     cv = WalkForwardCV(train_period=36)
     folds = list(cv.split(monthly_dates_2014_2025))
-    assert len(folds) == 7
+    assert len(folds) == 8
 
 
 def test_expanding_first_fold_window_sizes(monthly_dates_2014_2025):
@@ -357,14 +357,24 @@ def test_sliding_train_window_size_constant(monthly_dates_2014_2025):
 # ---------- Embargo configurations ----------------------------------------
 
 
-def test_regime_classifier_embargo_1_yields_more_folds(monthly_dates_2014_2025):
-    """For the same data, embargo=1 (regime) gives strictly more folds
-    than embargo=12 (screener)."""
+def test_regime_classifier_embargo_1_yields_more_folds():
+    """embargo=1 (regime) gives strictly more folds than embargo=12
+    (screener) for a data range where the difference manifests.
+
+    Note: for some data ranges the two embargo configs happen to fit
+    the same integer number of folds (boundary luck). 2014-01-31 to
+    2025-09-30 is chosen specifically so the difference is visible:
+    screener gets 7 (fold 7 test_end 2025-12-31 > data_end),
+    regime gets 8 (fold 7 test_end 2025-01-31 < data_end).
+    """
+    dates = pd.date_range(start="2014-01-31", end="2025-09-30", freq="ME")
     screener = WalkForwardCV(train_period=36, embargo=12)
     regime = WalkForwardCV(train_period=36, embargo=1)
-    n_screener = len(list(screener.split(monthly_dates_2014_2025)))
-    n_regime = len(list(regime.split(monthly_dates_2014_2025)))
+    n_screener = len(list(screener.split(dates)))
+    n_regime = len(list(regime.split(dates)))
     assert n_regime > n_screener
+    assert n_screener == 7
+    assert n_regime == 8
 
 
 def test_zero_embargo_test_starts_day_after_train_end(monthly_dates_2014_2025):
@@ -453,7 +463,7 @@ def test_strict_period_false_yields_truncated_final_fold(
 def test_summary_header_includes_config_and_fold_count(monthly_dates_2014_2025):
     cv = WalkForwardCV(train_period=36)
     s = cv.summary(monthly_dates_2014_2025)
-    assert "WalkForwardCV: 7 folds" in s
+    assert "WalkForwardCV: 8 folds" in s
     assert "expanding" in s
     assert "train_period=36mo" in s
     assert "embargo=12mo" in s
@@ -509,7 +519,7 @@ def test_split_long_yields_same_fold_count_as_base_split(
     cv = WalkForwardCV(train_period=36)
     base = list(cv.split(monthly_dates_2014_2025))
     long_folds = list(cv.split_long(long_df_uniform))
-    assert len(long_folds) == len(base) == 7
+    assert len(long_folds) == len(base) == 8
 
 
 def test_split_long_fold_date_windows_match_base(
@@ -599,7 +609,7 @@ def test_split_indices_yields_ndarray_tuples(monthly_dates_2014_2025):
     matching the BaseCrossValidator.split protocol shape."""
     cv = WalkForwardCV(train_period=36)
     pairs = list(cv.split_indices(monthly_dates_2014_2025))
-    assert len(pairs) == 7  # screener default fold count
+    assert len(pairs) == 8  # screener default fold count
     for train_idx, test_idx in pairs:
         assert isinstance(train_idx, np.ndarray)
         assert isinstance(test_idx, np.ndarray)
@@ -657,10 +667,100 @@ def test_split_indices_cross_val_score_smoke(monthly_dates_2014_2025):
 
     # One score per fold.
     expected_n_folds = sum(1 for _ in cv.split(monthly_dates_2014_2025))
-    assert len(scores) == expected_n_folds == 7
+    assert len(scores) == expected_n_folds == 8
     # Scores are floats in [0, 1] for accuracy on binary labels.
     assert all(np.isfinite(s) for s in scores)
     assert all(0.0 <= s <= 1.0 for s in scores)
+
+
+# ---------- Regression: business-day-adjusted month-end inputs ------------
+#
+# The real sp500_membership.parquet uses last-weekday-of-month dates, not
+# calendar month-ends. Day-of-month varies (28-31) depending on weekend
+# placement: 2021-01-31 was Sunday, so the Jan 2021 anchor is 2021-01-29.
+# These tests pin the calendar-month-anchor fix that prevents such dates
+# from leaking across fold boundaries.
+
+
+@pytest.fixture
+def business_month_end_dates():
+    """Last business day of each calendar month, 2014-01 to 2025-12.
+    Equivalent to data/processed/sp500_membership.parquet's date axis."""
+    return pd.date_range(start="2014-01-01", end="2025-12-31", freq="BME")
+
+
+def test_split_long_test_window_uniform_against_business_month_ends(
+    business_month_end_dates,
+):
+    """Every fold's test window contains exactly 12 dates regardless of
+    which day-of-month each business-day-adjusted month-end falls on.
+
+    Pre-fix: fold 2 had 13 months, fold 3 had 11 months because the
+    boundary 2021-01-30 split Jan 2021 (actual 2021-01-29) into fold 2's
+    test instead of fold 3's.
+    """
+    df = pd.DataFrame(
+        {"as_of_date": business_month_end_dates, "ticker": "AAPL"}
+    )
+    cv = WalkForwardCV(train_period=36)
+    sizes = [f.n_test for f in cv.split_long(df)]
+    assert all(s == 12 for s in sizes), (
+        f"Non-uniform test sizes: {sizes}. Every fold should have "
+        f"exactly 12 test rows for the screener default config; "
+        f"variability indicates a date-boundary regression."
+    )
+
+
+def test_split_long_train_size_grows_uniformly_against_business_month_ends(
+    business_month_end_dates,
+):
+    """Expanding mode: fold N's train size = 36 + N*12 exactly.
+
+    Pre-fix: fold 4 had 85 months because 2021-01-29 leaked into fold 4's
+    train (the boundary 2021-01-30 included it, but it conceptually
+    belongs to Jan 2021 which should be in fold 4's embargo).
+    """
+    df = pd.DataFrame(
+        {"as_of_date": business_month_end_dates, "ticker": "AAPL"}
+    )
+    cv = WalkForwardCV(train_period=36)
+    for i, f in enumerate(cv.split_long(df)):
+        expected = 36 + i * 12
+        assert f.n_train == expected, (
+            f"Fold {i}: n_train={f.n_train}, expected {expected}. "
+            f"Train size should grow exactly by step (12) per fold; "
+            f"non-uniformity indicates a date-boundary regression."
+        )
+
+
+def test_split_long_data_gap_consistent_against_business_month_ends(
+    business_month_end_dates,
+):
+    """For 12-month embargo, the actual data-level gap between max(train)
+    and min(test) should be ~395 days (12 months of embargo + boundary-
+    month bridge), with tight ±5 day variance from weekday calendar.
+
+    Pre-fix: gaps varied 367-423 days (56-day spread) because the
+    boundary-day arithmetic shifted dates across fold boundaries
+    unevenly.
+    """
+    df = pd.DataFrame(
+        {"as_of_date": business_month_end_dates, "ticker": "AAPL"}
+    )
+    cv = WalkForwardCV(train_period=36, embargo=12)
+    gaps = []
+    for f in cv.split_long(df):
+        max_train = df.iloc[f.train_indices]["as_of_date"].max()
+        min_test = df.iloc[f.test_indices]["as_of_date"].min()
+        gaps.append((min_test - max_train).days)
+    # All gaps should fall in a tight window around 395 (12-month
+    # embargo + bridge of last-train-month-end to first-test-month-end).
+    for i, g in enumerate(gaps):
+        assert 390 <= g <= 400, (
+            f"Fold {i}: data gap = {g} days. Expected 390-400 for "
+            f"12-month embargo with calendar-month-anchored boundaries. "
+            f"Full gap sequence: {gaps}"
+        )
 
 
 def test_split_long_empty_test_window_logs_warning(monkeypatch, caplog):
