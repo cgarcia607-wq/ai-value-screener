@@ -1,22 +1,19 @@
-"""Diagnostic: apply proposed regime label rules to real FRED data.
+"""Diagnostic: apply the regime label rules to real FRED data.
 
 Run from anywhere:
     python scripts/regime_label_diagnostic.py
 
-Prints the regime label per month for 2014-01 to 2025-12 (the period
-covered by the current FRED inventory), plus three sanity-check
-sections:
-  - COVID recession (Feb-Apr 2020)
-  - Yield curve inversion (2018-2019)
-  - Post-COVID recovery (mid-2020 to end-2021)
+Prints the regime label per month for 2014-01 to 2025-12, plus three
+sanity-check sections (COVID recession, 2018-19 yield curve inversion,
+post-COVID recovery), an NBER USREC overlap check, and a transitions-
+per-year coherence metric.
 
-Validates against NBER USREC: every NBER recession period should have
->= 50% Contraction overlap from the rules.
-
-The rule logic lives inline here (not in src/feature_engineering/
-regime_labels.py yet) because the rule thresholds are still under
-review. After owner approval of the label sequence, the rules get
-factored into the module.
+Uses the rule logic from src.feature_engineering.regime_labels. The
+diagnostic exists to surface what those rules produce on real data so
+threshold revisions can be reviewed before locking. After locking, the
+diagnostic remains as a regression-detection tool: re-run it any time
+the rule constants change and confirm the output still passes the
+sanity checks.
 """
 
 import datetime as dt
@@ -28,85 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd  # noqa: E402
 
 from src.data_sources.fred_client import get_features_matrix, get_series  # noqa: E402
-
-
-def derive_label_features(matrix: pd.DataFrame) -> pd.DataFrame:
-    """Derive the rule features from raw FRED columns."""
-    df = pd.DataFrame(index=matrix.index)
-    df["unrate"] = matrix["UNRATE"]
-    df["unrate_3mo_change"] = df["unrate"] - df["unrate"].shift(3)
-    df["unrate_6mo_change"] = df["unrate"] - df["unrate"].shift(6)
-    df["unrate_12mo_min"] = df["unrate"].rolling(window=12, min_periods=1).min()
-    df["unrate_24mo_min"] = df["unrate"].rolling(window=24, min_periods=1).min()
-    df["unrate_above_24mo_min"] = df["unrate"] - df["unrate_24mo_min"]
-    df["t10y3m"] = matrix["T10Y3M"]
-    df["nfcicredit"] = matrix["NFCICREDIT"]
-    return df
-
-
-def regime_label(row: pd.Series) -> str:
-    """Apply the four-rule cascade; return one of E/L/C/R.
-
-    The "+1.5 still-elevated unemployment" threshold appears in BOTH
-    Contraction (12-month lookback) and Recovery (24-month lookback).
-    Same threshold on both sides means the elevated-unemployment zone
-    is a single band; the direction of change (rising vs falling)
-    distinguishes which regime applies. Contraction uses the shorter
-    12-month lookback because new shocks are detected against recent
-    floors; Recovery uses 24-month lookback because "still elevated"
-    is measured against the pre-shock baseline that may pre-date the
-    current shock by a year+.
-    """
-    # 1. Contraction: 3-month unemployment spike combined with EITHER
-    #    credit stress OR elevated unemployment level. The credit-stress
-    #    clause catches the initial shock; the elevation clause keeps
-    #    Contraction labeled through the high-unemployment plateau
-    #    after credit has stabilized (e.g., May-June 2020).
-    if row["unrate_3mo_change"] > 0.5 and (
-        row["nfcicredit"] > 0.5
-        or row["unrate"] > row["unrate_12mo_min"] + 1.5
-    ):
-        return "Contraction"
-
-    # 2. Recovery: still elevated vs 24-month low, trending down over
-    #    6 months. The 6-month smoothing prevents flicker from month-
-    #    to-month noise. The 24-month lookback for the "still elevated"
-    #    reference avoids false-Recovery during normal expansion when
-    #    unemployment briefly ticks up and then declines.
-    if (
-        row["unrate"] > row["unrate_24mo_min"] + 1.5
-        and row["unrate_6mo_change"] < 0
-    ):
-        return "Recovery"
-
-    # 3. Late-cycle: yield curve flat or inverted (t10y3m < 0.25,
-    #    threshold locked after inspecting Nov 2018-Aug 2019 and
-    #    Apr-Jul 2022 episodes), unemployment near cycle low (within
-    #    0.7pp of 24-month min), credit not yet stressed.
-    #
-    #    The 0.7pp unemployment threshold sits below Recovery's +1.5
-    #    elevation threshold, forming a clean ladder:
-    #      <= 0.7pp from 24mo min  -> "labor market basically OK,
-    #                                  past peak" => Late-cycle-eligible
-    #      0.7-1.5pp                -> ambiguous (classifier expresses
-    #                                  uncertainty between Late-cycle
-    #                                  and Recovery)
-    #      >= 1.5pp                -> "still elevated" => Recovery
-    #                                  (or Contraction if also spiking)
-    #
-    #    Bumped from 0.5 to 0.7 because the 2024-2025 era had a deeply
-    #    inverted curve but unrate had drifted ~0.5pp off cycle low —
-    #    structurally Late-cycle, but the old 0.5 cutoff was too tight
-    #    to capture it.
-    if (
-        row["t10y3m"] < 0.25
-        and row["unrate_above_24mo_min"] < 0.7
-        and row["nfcicredit"] < 0.5
-    ):
-        return "Late-cycle"
-
-    # 4. Default: Expansion.
-    return "Expansion"
+from src.feature_engineering.regime_labels import (  # noqa: E402
+    _derive_label_features as derive_label_features,
+    compute_labels,
+)
 
 
 def main() -> None:
@@ -120,8 +42,8 @@ def main() -> None:
     print(f"Loaded {len(matrix)} monthly observations")
     print()
 
-    label_features = derive_label_features(matrix).dropna()
-    labels = label_features.apply(regime_label, axis=1)
+    labels = compute_labels(matrix)
+    label_features = derive_label_features(matrix).loc[labels.index]
 
     display = pd.DataFrame(
         {
