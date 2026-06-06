@@ -41,6 +41,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "D", "units": "%",
         "source": "Board of Governors via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,  # market-observed rate, never restated; no ALFRED archive
     },
     "DGS2": {
         "name": "2-Year Treasury Constant Maturity Rate",
@@ -48,6 +49,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "D", "units": "%",
         "source": "Board of Governors via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,
     },
     "T10Y2Y": {
         "name": "10-Year minus 2-Year Treasury Spread",
@@ -55,6 +57,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "D", "units": "%",
         "source": "FRED (computed from DGS10/DGS2)",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,
     },
     "T10Y3M": {
         "name": "10-Year minus 3-Month Treasury Spread",
@@ -62,6 +65,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "D", "units": "%",
         "source": "FRED (computed)",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,
     },
     # --- Credit -------------------------------------------------------
     # NOTE: BAMLH0A0HYM2 (ICE BofA US High Yield OAS) was the original
@@ -78,6 +82,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "W", "units": "index",
         "source": "Federal Reserve Bank of Chicago via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,  # Chicago Fed index, not restated by BLS/BEA
     },
     "BAA10Y": {
         "name": "Moody's Baa Corporate Bond Yield minus 10Y Treasury",
@@ -85,6 +90,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "D", "units": "%",
         "source": "Moody's / FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,  # market-observed spread, never restated
     },
     # --- Activity / Labor --------------------------------------------
     "UNRATE": {
@@ -93,6 +99,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "%",
         "source": "BLS via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,  # BLS revises; ALFRED has point-in-time archives
     },
     "ICSA": {
         "name": "Initial Jobless Claims",
@@ -100,6 +107,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "W", "units": "count",
         "source": "DOL via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,
     },
     "PAYEMS": {
         "name": "Total Nonfarm Payrolls",
@@ -107,6 +115,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "thousand",
         "source": "BLS via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,
     },
     "INDPRO": {
         "name": "Industrial Production Index",
@@ -114,6 +123,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "index",
         "source": "Board of Governors via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,
     },
     "HOUST": {
         "name": "Housing Starts",
@@ -121,6 +131,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "thousand SAAR",
         "source": "Census Bureau via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,
     },
     # --- Rates / Money -----------------------------------------------
     "FEDFUNDS": {
@@ -129,6 +140,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "%",
         "source": "Board of Governors via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,  # policy rate, not restated; historical record is fixed
     },
     "M2SL": {
         "name": "M2 Money Stock",
@@ -136,6 +148,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "$ billion",
         "source": "Board of Governors via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,  # Fed revises monetary aggregates
     },
     # --- Inflation ---------------------------------------------------
     "CPIAUCSL": {
@@ -144,6 +157,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "index",
         "source": "BLS via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,
     },
     "CPILFESL": {
         "name": "Core CPI (ex food and energy)",
@@ -151,6 +165,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "index",
         "source": "BLS via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,
     },
     "PCEPILFE": {
         "name": "Core PCE Price Index",
@@ -158,6 +173,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "index",
         "source": "BEA via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,
     },
     # --- Market internals --------------------------------------------
     "VIXCLS": {
@@ -166,6 +182,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "D", "units": "level",
         "source": "CBOE via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,  # exchange-published index, never restated
     },
     "DTWEXBGS": {
         "name": "Trade-Weighted Broad Dollar Index",
@@ -173,6 +190,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "D", "units": "index",
         "source": "Board of Governors via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,
     },
     "DCOILWTICO": {
         "name": "WTI Crude Oil Spot Price",
@@ -180,6 +198,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "D", "units": "USD/bbl",
         "source": "EIA via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": False,
     },
     "UMCSENT": {
         "name": "University of Michigan Consumer Sentiment",
@@ -187,6 +206,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "index",
         "source": "University of Michigan via FRED",
         "is_target": False, "resample": "ffill",
+        "vintaged": True,  # survey series revised on recontact / methodology changes
     },
     # --- Ground truth (label, NOT a feature) -------------------------
     # USREC is the NBER-based recession indicator. It is TARGET DATA
@@ -199,6 +219,7 @@ REGIME_SERIES: dict[str, dict] = {
         "frequency": "M", "units": "0/1",
         "source": "NBER via FRED",
         "is_target": True, "resample": "ffill",
+        "vintaged": False,  # NBER appends; past recession calls are never revised
     },
 }
 
@@ -314,13 +335,29 @@ def _fetch_from_fred(
     if end is not None:
         kwargs["observation_end"] = end.isoformat()
     if vintage_date is not None:
-        # BOTH realtime params must equal vintage_date to get the
-        # "as known on date X" point-in-time snapshot. realtime_end alone
-        # returns cumulative revision history (multiple rows per
-        # observation). See docs/design/fred_client.md "Vintage handling".
-        v = vintage_date.isoformat()
-        kwargs["realtime_start"] = v
-        kwargs["realtime_end"] = v
+        # Series carry a "vintaged" flag: True = BLS/BEA/Fed revises the
+        # data and ALFRED holds point-in-time archives; False = market-
+        # observed or NBER-appended, never restated, no ALFRED archive
+        # (querying with realtime params returns nothing and misreports as
+        # "series not found"). Default True for any series not in
+        # REGIME_SERIES — preserves the hard-error path for unknown IDs.
+        is_vintaged = REGIME_SERIES.get(series_id, {}).get("vintaged", True)
+        if is_vintaged:
+            # BOTH realtime params must equal vintage_date to get the
+            # "as known on date X" point-in-time snapshot. realtime_end alone
+            # returns cumulative revision history (multiple rows per
+            # observation). See docs/design/fred_client.md "Vintage handling".
+            v = vintage_date.isoformat()
+            kwargs["realtime_start"] = v
+            kwargs["realtime_end"] = v
+        else:
+            logger.warning(
+                "vintage_date=%s requested for non-revised series %s; "
+                "returning current values (never-restated — current == "
+                "point-in-time equivalent for this series).",
+                vintage_date.isoformat(),
+                series_id,
+            )
     try:
         return client.get_series(series_id, **kwargs)
     except Exception as e:

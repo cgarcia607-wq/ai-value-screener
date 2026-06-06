@@ -454,6 +454,82 @@ def test_get_series_vintage_cache_never_expires(monkeypatch):
     assert fred.get_series.call_count == 1
 
 
+# ---------- vintaged-dispatch tests ----------------------------------------
+
+
+def test_nonvintaged_series_falls_back_to_current(monkeypatch, caplog):
+    """Non-vintaged series (e.g. T10Y3M) with vintage_date must NOT add
+    realtime params, and must log a WARNING naming the series and vintage.
+
+    Rationale: market rates and NBER-appended indicators have no ALFRED
+    archive. Querying them with realtime_start/realtime_end returns nothing
+    and causes a false "series not found" error. The correct behaviour is to
+    fetch current values — for never-restated series, current == as-of.
+    """
+    fred = MagicMock()
+    fred.get_series.return_value = _make_series({"1995-01-01": -0.5})
+    _install_mock_client(monkeypatch, fred)
+
+    with caplog.at_level("WARNING", logger="src.data_sources.fred_client"):
+        get_series("T10Y3M", vintage_date=dt.date(1995, 1, 1))
+
+    kwargs = fred.get_series.call_args.kwargs
+    assert "realtime_start" not in kwargs, "non-vintaged series must not send realtime_start"
+    assert "realtime_end" not in kwargs, "non-vintaged series must not send realtime_end"
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "T10Y3M" in r.message and "1995-01-01" in r.message for r in warnings
+    ), "WARNING must name the series and vintage_date"
+
+
+def test_vintaged_series_uses_realtime_params(monkeypatch):
+    """Vintaged series (e.g. UNRATE) with vintage_date must add both realtime
+    params, equal to vintage_date, for a true point-in-time snapshot.
+    """
+    fred = MagicMock()
+    fred.get_series.return_value = _make_series({"2018-01-01": 4.1})
+    _install_mock_client(monkeypatch, fred)
+
+    get_series("UNRATE", vintage_date=dt.date(2018, 6, 30))
+
+    kwargs = fred.get_series.call_args.kwargs
+    assert kwargs.get("realtime_start") == "2018-06-30"
+    assert kwargs.get("realtime_end") == "2018-06-30"
+
+
+def test_unknown_series_defaults_to_vintaged(monkeypatch):
+    """A series ID not in REGIME_SERIES defaults to vintaged=True — realtime
+    params are added. Preserves the hard-error path: a bad ID will get
+    realtime params sent to FRED, which returns 'series not found', and our
+    wrapper raises ValueError. No silent fallback for unknown series.
+    """
+    fred = MagicMock()
+    fred.get_series.return_value = _make_series({"2020-01-01": 1.0})
+    _install_mock_client(monkeypatch, fred)
+
+    get_series("UNKNOWN_SERIES_XYZ", vintage_date=dt.date(2020, 1, 1))
+
+    kwargs = fred.get_series.call_args.kwargs
+    assert kwargs.get("realtime_start") == "2020-01-01"
+    assert kwargs.get("realtime_end") == "2020-01-01"
+
+
+def test_every_regime_series_has_vintaged_flag():
+    """Every entry in REGIME_SERIES must have a 'vintaged' key of type bool.
+
+    Guards against adding a new series later and forgetting the flag. Without
+    it the code defaults to vintaged=True (safe), but that silently causes
+    walk-forward CV to query non-ALFRED series with realtime params, yielding
+    a false 'series not found' error.
+    """
+    for sid, meta in REGIME_SERIES.items():
+        assert "vintaged" in meta, f"{sid} is missing the 'vintaged' key"
+        assert isinstance(meta["vintaged"], bool), (
+            f"{sid}: vintaged={meta['vintaged']!r} must be bool, not {type(meta['vintaged']).__name__}"
+        )
+
+
 # ---------- get_features_matrix -------------------------------------------
 
 
