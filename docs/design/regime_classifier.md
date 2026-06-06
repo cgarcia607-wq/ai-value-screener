@@ -177,7 +177,7 @@ months out." Genuinely different and genuinely useful.
 
 ```
 fred = get_features_matrix(start, end, vintage_date)
-labels_t = regime_labels(fred)                       # rules at time t
+labels_t = compute_labels(fred)                       # rules at time t
 y = labels_t.shift(-3)                                # the T+3 target
 X = fred
 train_mask = y.notna() & (idx in fold.train_indices)  # drop trailing 3
@@ -188,7 +188,7 @@ classifier.fit(X_train, y_train)
 proba = classifier.predict_proba(X_test)
 ```
 
-`regime_labels(features)` returns labels at time t — pure rules,
+`compute_labels(features)` returns labels at time t — pure rules,
 deterministic. The T+3 shift happens in the classifier's training
 orchestrator, not in `regime_labels.py` itself. Clean separation:
 `regime_labels.py` knows nothing about the prediction horizon; it
@@ -415,7 +415,7 @@ Per fold from `WalkForwardCV(train_period, embargo=3, ...)`:
    ```
 2. Generate labels at time t for all rows, then shift to T+3 targets:
    ```python
-   labels_t = regime_labels(matrix)
+   labels_t = compute_labels(matrix)
    y_t_plus_3 = labels_t.shift(-3)   # NaN in trailing 3 rows
    ```
 3. Split into train and test by fold indices, dropping rows where the
@@ -487,7 +487,7 @@ REGIMES: list[str] = ["Expansion", "Late-cycle", "Contraction", "Recovery"]
 LABEL_HORIZON_MONTHS: int = 3   # the T+3 prediction horizon
 
 
-def regime_labels(features: pd.DataFrame) -> pd.Series:
+def compute_labels(features: pd.DataFrame) -> pd.Series:
     """Apply the rules to produce a regime label PER ROW at time t.
 
     This function knows nothing about the prediction horizon — it
