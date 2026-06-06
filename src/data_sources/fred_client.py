@@ -458,6 +458,30 @@ def get_features_matrix(
         per requested series. Per-series resampling uses
         REGIME_SERIES[id]["resample"].
     """
+    # Fail loudly at the call site if a caller passed a string (or any
+    # non-date) for a date argument. Without this guard the bad value
+    # tunnels into pd.Timestamp / cache-path construction and surfaces
+    # as a confusing AttributeError or TypeError 80 frames down. Note
+    # that dt.datetime is a subclass of dt.date, so isinstance accepts
+    # both — callers can pass either.
+    if not isinstance(start, dt.date):
+        raise TypeError(
+            f"get_features_matrix: 'start' must be a datetime.date "
+            f"(or datetime.datetime), got {type(start).__name__}: {start!r}"
+        )
+    if end is not None and not isinstance(end, dt.date):
+        raise TypeError(
+            f"get_features_matrix: 'end' must be a datetime.date "
+            f"(or datetime.datetime) or None, got "
+            f"{type(end).__name__}: {end!r}"
+        )
+    if vintage_date is not None and not isinstance(vintage_date, dt.date):
+        raise TypeError(
+            f"get_features_matrix: 'vintage_date' must be a datetime.date "
+            f"(or datetime.datetime) or None, got "
+            f"{type(vintage_date).__name__}: {vintage_date!r}"
+        )
+
     if frequency != "M":
         raise NotImplementedError(
             f"frequency={frequency!r} not yet supported. Only 'M' "

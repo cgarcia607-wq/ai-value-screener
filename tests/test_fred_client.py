@@ -837,3 +837,29 @@ def test_real_api_anchor_values(monkeypatch):
         f"event of the test window. If this fails the replacement "
         f"series may have been further restricted or relocated."
     )
+
+
+# ---------------------------------------------------------------------------
+# Type-guard tests — date arguments must be datetime.date (or None where
+# allowed). Pre-flight check catches the string-instead-of-date footgun at
+# the call site rather than letting it tunnel into the FRED fetch path.
+# ---------------------------------------------------------------------------
+
+
+def test_features_matrix_rejects_string_start():
+    with pytest.raises(TypeError, match=r"'start'"):
+        get_features_matrix(start="2020-01-01")
+
+
+def test_features_matrix_rejects_string_end():
+    with pytest.raises(TypeError, match=r"'end'"):
+        get_features_matrix(start=dt.date(2020, 1, 1), end="2020-12-31")
+
+
+def test_features_matrix_rejects_string_vintage_date():
+    with pytest.raises(TypeError, match=r"'vintage_date'"):
+        get_features_matrix(
+            start=dt.date(2020, 1, 1),
+            end=dt.date(2020, 12, 31),
+            vintage_date="2021-01-01",
+        )
