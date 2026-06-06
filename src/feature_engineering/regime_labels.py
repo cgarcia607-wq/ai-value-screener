@@ -165,6 +165,112 @@ def _derive_label_features(matrix: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def validate_against_nber(
+    labels: pd.Series,
+    usrec: pd.Series,
+    min_overlap: float = 0.5,
+) -> list[dict]:
+    """Sanity-check our regime labels against NBER recession dating.
+
+    For each NBER recession period (a contiguous run of USREC == 1),
+    compute the fraction of months in that period that our rules
+    labeled "Contraction". The function returns a per-recession
+    report; the caller decides what to do with low overlap (e.g.,
+    assert in a test, log a WARNING in a diagnostic). Per the design
+    doc this function deliberately does not raise on low overlap —
+    "Caller raises if any overlap < min_overlap" is the caller's job.
+
+    Args:
+        labels: regime labels per month, DatetimeIndex. Values are
+            members of REGIMES.
+        usrec: NBER recession indicator (FRED USREC), DatetimeIndex.
+            NaN is treated as 0 (not in recession); NaN never
+            propagates into the report.
+        min_overlap: threshold for the `passes_min` flag. Default
+            0.5 matches the design doc's "≥50%" NBER overlap sanity
+            check.
+
+    Returns:
+        List of dicts, ordered by recession start date, with
+        recession_id assigned 1-based in that order. Each dict has:
+
+          - recession_id: int, 1-based sequence number
+          - start: pd.Timestamp, recession start (trimmed if needed)
+          - end: pd.Timestamp, recession end (trimmed if needed)
+          - overlap_fraction: float in [0, 1]
+          - passes_min: bool, overlap_fraction >= min_overlap
+          - trimmed_to_labels_coverage: True if either boundary was
+            trimmed to fit within labels' index range; key is absent
+            when the recession fell entirely inside labels coverage
+
+        Empty USREC (no recessions) → empty list, no raise.
+
+    Raises:
+        ValueError: labels.index and usrec.index have empty
+            intersection — nothing comparable.
+    """
+    if len(labels.index.intersection(usrec.index)) == 0:
+        raise ValueError(
+            "validate_against_nber: labels.index and usrec.index have no "
+            f"overlap; nothing to validate. labels covers "
+            f"[{labels.index.min()} … {labels.index.max()}], usrec covers "
+            f"[{usrec.index.min()} … {usrec.index.max()}]."
+        )
+
+    in_recession = (usrec.fillna(0) == 1).to_numpy(dtype=bool)
+    if not in_recession.any():
+        return []
+
+    usrec_index = usrec.index
+    labels_min = labels.index.min()
+    labels_max = labels.index.max()
+
+    results: list[dict] = []
+    run_start: int | None = None
+
+    def _emit(start_pos: int, end_pos: int) -> None:
+        rec_start = usrec_index[start_pos]
+        rec_end = usrec_index[end_pos]
+        trimmed_start = max(rec_start, labels_min)
+        trimmed_end = min(rec_end, labels_max)
+        was_trimmed = (trimmed_start != rec_start) or (
+            trimmed_end != rec_end
+        )
+
+        if trimmed_start > trimmed_end:
+            overlap = 0.0
+        else:
+            window = labels.loc[trimmed_start:trimmed_end]
+            overlap = (
+                float((window == "Contraction").mean())
+                if len(window) > 0
+                else 0.0
+            )
+
+        record: dict = {
+            "recession_id": len(results) + 1,
+            "start": trimmed_start,
+            "end": trimmed_end,
+            "overlap_fraction": overlap,
+            "passes_min": overlap >= min_overlap,
+        }
+        if was_trimmed:
+            record["trimmed_to_labels_coverage"] = True
+        results.append(record)
+
+    for i, flag in enumerate(in_recession):
+        if flag and run_start is None:
+            run_start = i
+        elif not flag and run_start is not None:
+            _emit(run_start, i - 1)
+            run_start = None
+
+    if run_start is not None:
+        _emit(run_start, len(in_recession) - 1)
+
+    return results
+
+
 def _label_row(row: pd.Series) -> str:
     """Apply the four-rule cascade to a single derived feature row.
 

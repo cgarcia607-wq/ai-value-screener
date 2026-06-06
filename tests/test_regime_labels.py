@@ -11,6 +11,7 @@ post-COVID Recovery.
 import datetime as dt
 import os
 
+import numpy as np
 import pandas as pd
 import pytest
 from dotenv import load_dotenv
@@ -24,6 +25,7 @@ from src.feature_engineering.regime_labels import (
     REGIMES,
     _label_row,
     compute_labels,
+    validate_against_nber,
 )
 
 
@@ -275,6 +277,136 @@ def test_compute_labels_raises_on_non_datetime_index():
     )
     with pytest.raises(ValueError, match="DatetimeIndex"):
         compute_labels(matrix)
+
+
+# ---------- validate_against_nber -----------------------------------------
+
+
+def _idx(n: int, start: str = "2020-01-31") -> pd.DatetimeIndex:
+    return pd.date_range(start=start, periods=n, freq="ME")
+
+
+def test_validate_against_nber_empty_usrec():
+    idx = _idx(12)
+    labels = pd.Series(["Expansion"] * 12, index=idx)
+    usrec = pd.Series([0] * 12, index=idx)
+
+    assert validate_against_nber(labels, usrec) == []
+
+
+def test_validate_against_nber_full_overlap():
+    idx = _idx(12)
+    labels_vals = ["Expansion"] * 12
+    usrec_vals = [0] * 12
+    for i in (2, 3, 4):  # Mar-May recession, 100% Contraction-labeled.
+        labels_vals[i] = "Contraction"
+        usrec_vals[i] = 1
+    labels = pd.Series(labels_vals, index=idx)
+    usrec = pd.Series(usrec_vals, index=idx)
+
+    result = validate_against_nber(labels, usrec)
+
+    assert len(result) == 1
+    rec = result[0]
+    assert rec["recession_id"] == 1
+    assert rec["start"] == idx[2]
+    assert rec["end"] == idx[4]
+    assert rec["overlap_fraction"] == 1.0
+    assert rec["passes_min"] is True
+    assert "trimmed_to_labels_coverage" not in rec
+
+
+def test_validate_against_nber_partial_overlap():
+    idx = _idx(12)
+    # Recession spans 10 months (indices 1-10). Only 3 are labeled
+    # Contraction → 3/10 = 0.3, below default 0.5 floor.
+    labels_vals = ["Expansion"] * 12
+    for i in (3, 4, 5):
+        labels_vals[i] = "Contraction"
+    usrec_vals = [0] + [1] * 10 + [0]
+    labels = pd.Series(labels_vals, index=idx)
+    usrec = pd.Series(usrec_vals, index=idx)
+
+    result = validate_against_nber(labels, usrec, min_overlap=0.5)
+
+    assert len(result) == 1
+    assert result[0]["overlap_fraction"] == pytest.approx(0.3)
+    assert result[0]["passes_min"] is False
+
+
+def test_validate_against_nber_handles_nan_in_usrec():
+    idx = _idx(6)
+    labels = pd.Series(["Expansion"] * 6, index=idx)
+    # NaN must be treated as 0 — these scattered NaN values must not
+    # be reported as recession months.
+    usrec = pd.Series([0, np.nan, 0, 0, np.nan, 0], index=idx)
+
+    assert validate_against_nber(labels, usrec) == []
+
+
+def test_validate_against_nber_multiple_recessions():
+    idx = _idx(36, start="2018-01-31")
+    labels_vals = ["Expansion"] * 36
+    usrec_vals = [0] * 36
+    # rec1: indices 3-5 (3 months). rec2: indices 20-23 (4 months).
+    for i in (3, 4, 5):
+        usrec_vals[i] = 1
+    for i in (20, 21, 22, 23):
+        usrec_vals[i] = 1
+    labels_vals[3] = "Contraction"
+    labels_vals[20] = "Contraction"
+    labels = pd.Series(labels_vals, index=idx)
+    usrec = pd.Series(usrec_vals, index=idx)
+
+    result = validate_against_nber(labels, usrec)
+
+    assert len(result) == 2
+    assert result[0]["recession_id"] == 1
+    assert result[1]["recession_id"] == 2
+    assert result[0]["start"] == idx[3]
+    assert result[0]["end"] == idx[5]
+    assert result[1]["start"] == idx[20]
+    assert result[1]["end"] == idx[23]
+    assert result[0]["start"] < result[1]["start"]
+
+
+def test_validate_against_nber_index_mismatch_raises():
+    labels = pd.Series(
+        ["Expansion"] * 6, index=_idx(6, start="2020-01-31")
+    )
+    usrec = pd.Series(
+        [0, 1, 1, 1, 0, 0], index=_idx(6, start="2030-01-31")
+    )
+
+    with pytest.raises(ValueError, match="overlap"):
+        validate_against_nber(labels, usrec)
+
+
+def test_validate_against_nber_recession_extends_past_labels():
+    labels_idx = _idx(8, start="2020-01-31")
+    usrec_idx = _idx(12, start="2020-01-31")
+    # USREC recession spans indices 5-11 (7 months), but labels only
+    # cover through index 7 of usrec_idx (= labels_idx[7]). The report
+    # should trim to labels' coverage and flag the trim.
+    labels_vals = ["Expansion"] * 8
+    for i in (5, 6, 7):
+        labels_vals[i] = "Contraction"
+    usrec_vals = [0] * 12
+    for i in range(5, 12):
+        usrec_vals[i] = 1
+
+    labels = pd.Series(labels_vals, index=labels_idx)
+    usrec = pd.Series(usrec_vals, index=usrec_idx)
+
+    result = validate_against_nber(labels, usrec)
+
+    assert len(result) == 1
+    rec = result[0]
+    assert rec["start"] == labels_idx[5]
+    assert rec["end"] == labels_idx[7]  # trimmed from usrec_idx[11]
+    assert rec.get("trimmed_to_labels_coverage") is True
+    # All 3 months in the trimmed window are labeled Contraction.
+    assert rec["overlap_fraction"] == 1.0
 
 
 # ---------- Integration tests against real FRED (slow) --------------------
