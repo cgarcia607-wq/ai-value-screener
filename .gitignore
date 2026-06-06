@@ -37,3 +37,4 @@ data/raw/sp500_change_log/upstream_check.json
 
 # Jupyter
 .ipynb_checkpoints/
+!src/models/
