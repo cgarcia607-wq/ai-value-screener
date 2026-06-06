@@ -1,8 +1,9 @@
-"""Phase 1 unit tests for src/models/regime_classifier.py.
+"""Unit tests for src/models/regime_classifier.py.
 
-Fast tests only — synthetic 4-class data, no FRED API. Phase 2 will
-add walk-forward orchestrator tests and integration tests against
-real FRED data.
+Fast tests only — synthetic data, no FRED API. Covers both the
+phase-1 RegimeClassifier wrapper and the phase-2 walk-forward
+orchestrator (T+3 target construction, fold-level NaN filtering,
+artifact layout, adoption-decision logic).
 """
 
 from __future__ import annotations
@@ -11,8 +12,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.feature_engineering.regime_labels import REGIMES
-from src.models.regime_classifier import RegimeClassifier
+from src.feature_engineering.regime_labels import REGIMES, compute_labels
+from src.models.regime_classifier import (
+    LABEL_HORIZON_MONTHS,
+    RegimeClassifier,
+    _apply_adoption_decision,
+    _build_t_plus_3_targets,
+    run_walk_forward,
+)
+from src.validation.walk_forward import WalkForwardCV
 
 
 def _make_synthetic_dataset(
@@ -100,3 +108,170 @@ def test_logistic_vs_xgboost_models_accept_same_inputs(synthetic_data):
         assert len(preds) == len(X)
         assert proba.shape == (len(X), len(REGIMES))
         assert list(proba.columns) == list(REGIMES)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: walk-forward orchestrator
+# ---------------------------------------------------------------------------
+
+
+def _make_synthetic_regime_features(
+    n_months: int = 72, switch_at: int = 24, seed: int = 0
+) -> pd.DataFrame:
+    """Construct synthetic FRED-like monthly features that produce a
+    deterministic mix of Expansion (first segment) and Late-cycle
+    (second segment) regimes via compute_labels.
+
+    Stable, low unemployment keeps the Contraction and Recovery rules
+    from firing; T10Y3M flips from steeply positive to inverted at
+    `switch_at` so the labeling rules transition from Expansion to
+    Late-cycle deterministically.
+    """
+    idx = pd.date_range("2015-01-31", periods=n_months, freq="ME")
+    rng = np.random.default_rng(seed)
+
+    unrate = 4.0 + rng.normal(0, 0.03, n_months)
+    t10y3m = np.concatenate(
+        [
+            np.full(switch_at, 1.0) + rng.normal(0, 0.03, switch_at),
+            np.full(n_months - switch_at, -0.3)
+            + rng.normal(0, 0.03, n_months - switch_at),
+        ]
+    )
+    nfcicredit = -0.2 + rng.normal(0, 0.03, n_months)
+
+    return pd.DataFrame(
+        {
+            "UNRATE": unrate,
+            "T10Y3M": t10y3m,
+            "NFCICREDIT": nfcicredit,
+            "DGS10": 2.5 + rng.normal(0, 0.1, n_months),
+            "FEDFUNDS": 1.5 + rng.normal(0, 0.1, n_months),
+        },
+        index=idx,
+    )
+
+
+def test_walk_forward_shifts_labels_by_3_months():
+    """For every date d in labels_t.index whose +3 sibling is also
+    present, the T+3 target at d must equal labels_t at d+3 — the
+    classifier's training pair is (features[t], labels[t+3]), never
+    (features[t], labels[t])."""
+    features = _make_synthetic_regime_features(n_months=36, switch_at=18)
+    labels_t = compute_labels(features)
+    targets = _build_t_plus_3_targets(features)
+
+    # The synthetic switch_at=18 + 3-month shift puts at least one
+    # Expansion target and one Late-cycle target in the comparison
+    # window, so this isn't a trivially-satisfied assertion.
+    assert set(labels_t.unique()) == {"Expansion", "Late-cycle"}
+
+    label_index = labels_t.index
+    for i in range(len(label_index) - LABEL_HORIZON_MONTHS):
+        date_t = label_index[i]
+        date_t_plus_3 = label_index[i + LABEL_HORIZON_MONTHS]
+        assert targets.loc[date_t] == labels_t.loc[date_t_plus_3], (
+            f"Targets at {date_t.date()} should equal labels_t at "
+            f"{date_t_plus_3.date()}; got "
+            f"{targets.loc[date_t]!r} vs {labels_t.loc[date_t_plus_3]!r}"
+        )
+
+
+def test_walk_forward_drops_trailing_3_rows():
+    """The last LABEL_HORIZON_MONTHS rows of features have NaN T+3
+    targets by shift construction, and the orchestrator's NaN filter
+    must keep them out of every fold's train and test slice."""
+    features = _make_synthetic_regime_features(n_months=51, switch_at=20)
+    targets = _build_t_plus_3_targets(features)
+
+    n = len(features)
+    trailing_positions = {n - 3, n - 2, n - 1}
+
+    # The trailing-3 NaN is the load-bearing claim of the test.
+    assert targets.iloc[-LABEL_HORIZON_MONTHS:].isna().all()
+    # The row immediately before the trailing block has a valid label —
+    # we are not accidentally dropping more than the spec says.
+    assert not pd.isna(targets.iloc[n - LABEL_HORIZON_MONTHS - 1])
+
+    cv = WalkForwardCV(
+        train_period=24, test_period=12, embargo=3, step=12
+    )
+    folds = list(cv.split(features.index))
+    assert len(folds) >= 1
+
+    # With 51 months and this config, fold 1's test ends at the data
+    # end, so the trailing-3 positions ARE in test_indices pre-filter.
+    # That's what makes the test meaningful — the filter has to remove
+    # them, not just rely on them being out of range.
+    last_fold = folds[-1]
+    assert trailing_positions.issubset(set(last_fold.test_indices.tolist())), (
+        "Test precondition: trailing positions must be in the last "
+        "fold's pre-filter test_indices, otherwise the assertion below "
+        "passes vacuously."
+    )
+
+    for fold in folds:
+        train_mask = targets.iloc[fold.train_indices].notna().to_numpy()
+        test_mask = targets.iloc[fold.test_indices].notna().to_numpy()
+        train_valid = set(fold.train_indices[train_mask].tolist())
+        test_valid = set(fold.test_indices[test_mask].tolist())
+        assert trailing_positions.isdisjoint(train_valid), (
+            f"Fold {fold.fold_id}: trailing positions leaked into "
+            f"train_valid"
+        )
+        assert trailing_positions.isdisjoint(test_valid), (
+            f"Fold {fold.fold_id}: trailing positions leaked into "
+            f"test_valid"
+        )
+
+
+def test_run_walk_forward_writes_expected_files(tmp_path):
+    features = _make_synthetic_regime_features(n_months=72, switch_at=24)
+    cv = WalkForwardCV(
+        train_period=36, test_period=12, embargo=3, step=12
+    )
+
+    decision = run_walk_forward(
+        cv=cv, features=features, output_dir=tmp_path
+    )
+
+    run_subdirs = [p for p in tmp_path.iterdir() if p.is_dir()]
+    assert len(run_subdirs) == 1, (
+        f"Expected exactly one timestamped run dir under tmp_path, "
+        f"got {[p.name for p in run_subdirs]}"
+    )
+    run_dir = run_subdirs[0]
+
+    for fname in (
+        "fold_0_lr.joblib",
+        "fold_0_xgb.joblib",
+        "fold_0_metrics.json",
+        "aggregated_metrics.json",
+        "adoption_decision.json",
+    ):
+        assert (run_dir / fname).exists(), f"Missing artifact: {fname}"
+
+    assert decision["winner"] in ("logistic", "xgboost")
+    assert "lr_macro_f1" in decision
+    assert "xgb_macro_f1" in decision
+    assert "reason" in decision
+
+
+def test_adoption_decision_prefers_lr_on_tie():
+    """Lift inside ±0.02 → LR wins the tiebreaker for interpretability."""
+    lr = [0.50, 0.55, 0.52]
+    xgb = [0.51, 0.56, 0.52]  # avg lift ≈ 0.0067, inside ±0.02
+    decision = _apply_adoption_decision(lr, xgb)
+
+    assert decision["winner"] == "logistic"
+    assert abs(decision["xgb_macro_f1"] - decision["lr_macro_f1"]) < 0.02
+
+
+def test_adoption_decision_picks_xgboost_on_clear_win():
+    """+0.05pp macro-F1 lift exactly hits the adoption bar → XGB wins."""
+    lr = [0.50, 0.50, 0.50]
+    xgb = [0.55, 0.55, 0.55]  # avg lift == 0.05, no catastrophic fold
+    decision = _apply_adoption_decision(lr, xgb)
+
+    assert decision["winner"] == "xgboost"
+    assert decision["xgb_macro_f1"] - decision["lr_macro_f1"] == pytest.approx(0.05)
