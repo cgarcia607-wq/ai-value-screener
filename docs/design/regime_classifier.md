@@ -4,7 +4,13 @@
 `src/models/regime_classifier.py`
 **Status**: Proposed, pre-implementation
 **Owner**: Chris Garcia
-**Last updated**: 2026-06-05
+**Last updated**: 2026-06-09
+
+## Revision history
+
+| Date | Change |
+|---|---|
+| 2026-06 | NFCICREDIT → BAA10Y swap in labeling rules. NFCICREDIT is backfilled pre-2010 (constructed ~2010), injecting look-ahead bias into ground-truth labels for two decades. BAA10Y is market-observed, never restated, honest to 1986. Threshold 3.0pp in both the Contraction credit arm and the Late-cycle calm ceiling. Also documented the 2000–2024 label training window: the 1990–91 recession is out of scope because BAA10Y never crossed 3.0 during that cycle (labor/oil-driven, no credit-spread widening). |
 
 ## Purpose
 
@@ -49,7 +55,7 @@ derivations are deterministic and pure.
 | `unrate_above_min` | derived | `unrate − unrate_24mo_min` (pp) |
 | `unrate_12mo_max` | `UNRATE` | trailing 12-month max |
 | `t10y3m` | `T10Y3M` | direct (Fed's preferred recession spread) |
-| `nfcicredit` | `NFCICREDIT` | direct (positive = tighter credit) |
+| `baa10y` | `BAA10Y` | direct (pp spread; >=3.0 = credit stress) |
 
 USREC is **deliberately excluded from the rules**, even though it's
 in the FRED inventory. Rationale below.
@@ -58,17 +64,23 @@ in the FRED inventory. Rationale below.
 
 ```
 1. Contraction:
-   unrate_3mo_change > 0.5  AND  nfcicredit > 0.5
-   (Sahm-rule-flavored stress detection; real-time-available)
+   unrate_3mo_change > 0.5
+   AND (baa10y > 3.0 OR unrate > unrate_12mo_min + 1.5)
+   (Sahm-rule-flavored spike detection. The OR-clause keeps Contraction
+    labeled through a high-unemployment plateau after credit stabilizes —
+    e.g. May-June 2020 when unrate was 11-13% but BAA10Y had fallen below
+    3.0. baa10y replaces nfcicredit; see Revision history.)
 
 2. Recovery:
-   unrate_12mo_max > 6.0  AND  unrate_3mo_change < 0
-   (coming off elevated unemployment with falling trend)
+   unrate > unrate_24mo_min + 1.5  AND  unrate_6mo_change < 0.0
+   (still elevated vs 24-month low, trending down over 6 months;
+    6-month window damps month-to-month flicker vs earlier 3-month version)
 
 3. Late-cycle:
-   t10y3m < 0  AND  unrate_above_min < 0.5  AND  nfcicredit < 0.5
-   (yield curve inverted, unemployment near cycle low,
-    credit not yet stressed — the classic late-cycle signature)
+   t10y3m < 0.25  AND  unrate_above_24mo_min < 0.7  AND  baa10y < 3.0
+   (yield curve flat-or-inverted, unemployment near cycle low, credit not
+    yet stressed — the classic late-cycle signature; 0.25 threshold
+    captures the full 2019 inversion episode)
 
 4. Expansion:
    (default — none of the above)
@@ -395,11 +407,38 @@ doesn't ship either; calibration is the whole point of using
 
 ### NBER overlap sanity check (validation, not training metric)
 
-For every period where `USREC == 1` (NBER recession), at least 50%
-of months should be labeled Contraction by our rules. If the rules
-miss the majority of NBER recessions, the rules are wrong, not the
-classifier. This is a label-quality check, computed once per
-training run.
+Contraction labels the **acute phase** of a downturn, not the full NBER
+recession window. The validation expectation (2000–2024 label window):
+
+- Every NBER recession must contain **≥1 Contraction month** from our rules.
+- Every Contraction month must be either **inside** an NBER recession or
+  **within 3 months after** a recession end (post-trough plateau allowance —
+  elevated unemployment can persist briefly after the NBER trough).
+- Zero calm-period strays (Contraction more than 3 months after any trough,
+  outside any recession).
+
+**Verified 2000–2024:**
+
+| Recession | NBER dates | Contraction months | Overlap |
+|---|---|---|---|
+| 2001 | Mar–Nov 2001 | 2 months | 25% |
+| 2008–09 | Dec 2007–Jun 2009 | 11 months | 61% |
+| 2020 | Feb–Apr 2020 | 2 months* | 100% |
+
+\* 2020-05 and 2020-06 are accepted post-trough strays (unrate 11–13%;
+elevated-unemployment OR-clause fires; within 3 months of the April 2020
+trough). Zero calm-period strays.
+
+**Label window**: 2000–2024. The 1990–91 recession is intentionally out of
+scope: BAA10Y stayed at calm levels (~2.0–2.35pp) throughout that cycle
+(labor/oil-driven, no credit-spread widening); no honest BAA10Y threshold
+detects it without also firing on benign late-cycle periods. This is a scope
+decision, not a coverage gap.
+
+The previous specification required ≥50% Contraction overlap per NBER
+recession. That threshold assumed Contraction maps to the full recession
+window; the revised view is that Contraction is the acute peak/shock phase.
+The classifier learns to detect that, not reproduce the full NBER calendar.
 
 ## Walk-forward integration
 

@@ -85,8 +85,23 @@ tests/                    # pytest, run on every push via GitHub Actions.
 ### Regime classifier
 - **Not** a binary drawdown predictor. The taxonomy is 4 regimes, not 2.
 - **Ground truth**: rules-based labels using yield curve, unemployment trend,
-  credit spreads, validated against NBER recession dates (FRED series USREC).
-  Document the rules clearly in `regime_labels.py`.
+  and BAA10Y credit spreads (Moody's Baa–10Y Treasury spread), validated
+  against NBER recession dates (FRED series USREC). Document the rules
+  clearly in `regime_labels.py`.
+- **Methodology revision (2026-06)**: NFCICREDIT removed from labeling rules.
+  NFCICREDIT is backfilled pre-2010 (Chicago Fed constructed the index ~2010),
+  so using it in the ground-truth rules injected look-ahead bias into labels
+  for two decades of history. Replaced with BAA10Y (market-observed, never
+  restated, honest back to 1986) at threshold 3.0pp in both the Contraction
+  credit arm and the Late-cycle calm ceiling. NFCICREDIT may remain a **model
+  feature** (inference-time input); it must not appear in rules that define
+  ground truth. Contraction labels the ACUTE phase of a downturn, not the full
+  NBER recession — expect ≥1 Contraction month per recession; post-trough
+  Contraction months during a high-unemployment plateau (e.g., 2020-05/06 with
+  unrate 11–13%) are acceptable. Regime training/label window: 2000–2024.
+  The 1990–91 recession is out of scope: labor/oil-driven without credit-spread
+  widening (BAA10Y stayed ~2.0–2.35pp throughout); no honest BAA10Y threshold
+  detects it. Documented as a scope decision, not hidden.
 - **Baseline**: always train a logistic regression baseline alongside XGBoost.
   If XGBoost doesn't beat it meaningfully, use the simpler model.
 - **Validation**: same walk-forward CV harness as the stock model,

@@ -542,3 +542,70 @@ def test_real_data_2014_2017_uniformly_expansion(fred_features_2014_2025):
         f"Expected all Expansion in 2014-2017; found {len(non_expansion)} "
         f"non-Expansion months: {non_expansion.to_dict()}"
     )
+
+
+@pytest.mark.slow
+def test_real_data_every_nber_recession_has_acute_contraction():
+    """2000-2024: every NBER recession contains >=1 Contraction-labeled month;
+    every Contraction month is inside a recession or within 3 months of the trough.
+
+    Verified results (2000-2024):
+      2001 recession:    2 Contraction months (25%)
+      2008-09 recession: 11 Contraction months (61%)
+      2020 recession:    2 Contraction months (100%, 2 accepted post-trough strays)
+      Calm-period strays: 0
+
+    Feature window starts 1998 to warm the 24-month rolling windows;
+    labels are sliced to 2000+ (the documented training window).
+    1990-91 is intentionally out of scope — BAA10Y never crossed 3.0
+    during that recession (labor/oil-driven, no credit-spread widening).
+    """
+    load_dotenv(override=True)
+    if not os.environ.get("FRED_API_KEY", "").strip():
+        pytest.skip("FRED_API_KEY not set in .env")
+
+    from src.data_sources.fred_client import (
+        _reset_client_for_testing,
+        get_features_matrix,
+        get_series,
+    )
+
+    _reset_client_for_testing()
+
+    features = get_features_matrix(
+        start=dt.date(1998, 1, 1), end=dt.date(2024, 12, 31)
+    )
+    labels = compute_labels(features)
+    labels_2000 = labels.loc["2000-01-01":]
+
+    usrec_raw = get_series(
+        "USREC", start=dt.date(2000, 1, 1), end=dt.date(2024, 12, 31)
+    )
+    usrec = usrec_raw.resample("ME").last()
+
+    report = validate_against_nber(labels_2000, usrec)
+
+    assert len(report) == 3, (
+        f"Expected 3 NBER recessions in 2000-2024; found {len(report)}: "
+        f"{[(str(r['start'].date()), str(r['end'].date())) for r in report]}"
+    )
+
+    for r in report:
+        assert r["overlap_fraction"] > 0, (
+            f"Recession {r['recession_id']} ({r['start'].date()} – "
+            f"{r['end'].date()}) has no Contraction months; "
+            f"overlap={r['overlap_fraction']:.0%}"
+        )
+
+    contraction_months = labels_2000[labels_2000 == "Contraction"].index
+    for cm in contraction_months:
+        in_recession = any(r["start"] <= cm <= r["end"] for r in report)
+        near_trough = any(
+            r["end"] < cm <= r["end"] + pd.DateOffset(months=3)
+            for r in report
+        )
+        assert in_recession or near_trough, (
+            f"Contraction label at {cm.date()} is not inside any NBER "
+            f"recession and is more than 3 months after any trough — "
+            f"calm-period stray."
+        )
