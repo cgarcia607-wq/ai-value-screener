@@ -17,9 +17,9 @@ import pytest
 from dotenv import load_dotenv
 
 from src.feature_engineering.regime_labels import (
-    CONTRACTION_NFCI_THRESHOLD,
+    CONTRACTION_BAA_THRESHOLD,
     CONTRACTION_UNRATE_ELEVATION,
-    LATE_CYCLE_NFCI_MAX,
+    LATE_CYCLE_BAA_MAX,
     LATE_CYCLE_UNRATE_ABOVE_MIN_MAX,
     RECOVERY_UNRATE_ELEVATION,
     REGIMES,
@@ -51,11 +51,11 @@ def test_contraction_and_recovery_share_elevation_threshold():
     assert CONTRACTION_UNRATE_ELEVATION == RECOVERY_UNRATE_ELEVATION
 
 
-def test_nfci_thresholds_match_across_rules():
-    """The NFCICREDIT 0.5 boundary should be the same on both sides:
-    > 0.5 triggers Contraction's credit-stress arm, < 0.5 is required
+def test_baa10y_thresholds_match_across_rules():
+    """The BAA10Y 3.0 boundary should be the same on both sides:
+    > 3.0 triggers Contraction's credit-stress arm, < 3.0 is required
     for Late-cycle to fire (credit must be benign)."""
-    assert CONTRACTION_NFCI_THRESHOLD == LATE_CYCLE_NFCI_MAX
+    assert CONTRACTION_BAA_THRESHOLD == LATE_CYCLE_BAA_MAX
 
 
 # ---------- _label_row rule cascade ---------------------------------------
@@ -71,17 +71,17 @@ def _baseline_row(**overrides) -> pd.Series:
         "unrate_24mo_min": 4.0,
         "unrate_above_24mo_min": 0.0,
         "t10y3m": 1.5,
-        "nfcicredit": -0.1,
+        "baa10y": 2.0,
     }
     base.update(overrides)
     return pd.Series(base)
 
 
 def test_label_row_returns_contraction_on_credit_stress_arm():
-    """Unemployment spike + high NFCICREDIT -> Contraction (first arm)."""
+    """Unemployment spike + high BAA10Y -> Contraction (first arm)."""
     row = _baseline_row(
         unrate_3mo_change=0.8,
-        nfcicredit=0.8,  # > 0.5
+        baa10y=4.0,  # > 3.0
     )
     assert _label_row(row) == "Contraction"
 
@@ -90,13 +90,13 @@ def test_label_row_returns_contraction_on_elevated_unemployment_arm():
     """Unemployment spike + elevated level -> Contraction (second arm).
 
     This is the COVID May-June 2020 case: dUnr_3mo still very positive
-    but NFCICREDIT had stabilized below 0.5. The OR clause keeps the
+    but BAA10Y had stabilized below 3.0. The OR clause keeps the
     label Contraction through the high-unemployment plateau."""
     row = _baseline_row(
         unrate=6.0,
         unrate_3mo_change=0.8,
         unrate_12mo_min=4.0,  # elevation = 2.0 > 1.5
-        nfcicredit=0.2,        # NOT > 0.5
+        baa10y=2.0,            # NOT > 3.0
     )
     assert _label_row(row) == "Contraction"
 
@@ -120,7 +120,7 @@ def test_label_row_returns_late_cycle():
         unrate_24mo_min=3.5,
         unrate_above_24mo_min=0.2,  # < 0.7
         t10y3m=-0.5,                 # < 0.25
-        nfcicredit=-0.1,             # < 0.5
+        baa10y=2.0,                  # < 3.0
     )
     assert _label_row(row) == "Late-cycle"
 
@@ -140,7 +140,7 @@ def test_late_cycle_t10y3m_boundary_is_strict_less_than():
         unrate=3.7,
         unrate_24mo_min=3.5,
         unrate_above_24mo_min=0.2,
-        nfcicredit=-0.1,
+        baa10y=2.0,
     )
     assert _label_row(_baseline_row(**base, t10y3m=0.25)) == "Expansion"
     assert _label_row(_baseline_row(**base, t10y3m=0.24)) == "Late-cycle"
@@ -152,7 +152,7 @@ def test_late_cycle_unrate_boundary_is_strict_less_than():
         unrate=4.2,
         unrate_24mo_min=3.5,
         t10y3m=-0.5,
-        nfcicredit=-0.1,
+        baa10y=2.0,
     )
     assert (
         _label_row(_baseline_row(**base, unrate_above_24mo_min=0.7))
@@ -166,7 +166,7 @@ def test_late_cycle_unrate_boundary_is_strict_less_than():
 
 def test_contraction_unrate_3mo_change_boundary_is_strict_greater():
     """unrate_3mo_change exactly at 0.5 -> doesn't trigger; > 0.5 does."""
-    base = dict(unrate=4.5, nfcicredit=0.8)
+    base = dict(unrate=4.5, baa10y=4.0)
     # At 0.5: not Contraction.
     assert (
         _label_row(_baseline_row(**base, unrate_3mo_change=0.5))
@@ -215,7 +215,7 @@ def test_cascade_recovery_beats_late_cycle_on_double_match():
         unrate_24mo_min=4.0,
         unrate_above_24mo_min=2.0,     # Recovery trigger; > 0.7 so Late-cycle fails anyway
         t10y3m=-0.5,                    # Late-cycle curve trigger
-        nfcicredit=-0.1,
+        baa10y=2.0,
     )
     assert _label_row(row) == "Recovery"
 
@@ -230,7 +230,7 @@ def _synthetic_fred_matrix(n_months: int = 36) -> pd.DataFrame:
         {
             "UNRATE": [4.0] * n_months,
             "T10Y3M": [1.5] * n_months,
-            "NFCICREDIT": [-0.1] * n_months,
+            "BAA10Y": [2.0] * n_months,
         },
         index=dates,
     )
@@ -263,16 +263,16 @@ def test_compute_labels_benign_synthetic_data_yields_expansion():
 def test_compute_labels_raises_on_missing_required_column():
     dates = pd.date_range(start="2014-01-31", periods=12, freq="ME")
     matrix = pd.DataFrame(
-        {"UNRATE": [4.0] * 12, "T10Y3M": [1.5] * 12},  # NFCICREDIT missing
+        {"UNRATE": [4.0] * 12, "T10Y3M": [1.5] * 12},  # BAA10Y missing
         index=dates,
     )
-    with pytest.raises(ValueError, match="NFCICREDIT"):
+    with pytest.raises(ValueError, match="BAA10Y"):
         compute_labels(matrix)
 
 
 def test_compute_labels_raises_on_non_datetime_index():
     matrix = pd.DataFrame(
-        {"UNRATE": [4.0], "T10Y3M": [1.5], "NFCICREDIT": [-0.1]},
+        {"UNRATE": [4.0], "T10Y3M": [1.5], "BAA10Y": [2.0]},
         index=[0],
     )
     with pytest.raises(ValueError, match="DatetimeIndex"):

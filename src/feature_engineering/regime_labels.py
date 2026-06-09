@@ -46,11 +46,17 @@ CONTRACTION_UNRATE_3MO_CHANGE_MIN: float = 0.5
 0.5pp over 3 months is a real spike — historical normal-times
 fluctuations are under 0.3pp."""
 
-CONTRACTION_NFCI_THRESHOLD: float = 0.5
-"""Chicago Fed NFCICREDIT level (positive = tighter credit) at or
-above which Contraction fires on the credit-stress arm. NFCICREDIT
-in normal times ranges -0.3 to +0.3; > 0.5 is meaningful stress.
-COVID March-April 2020 peaked at 0.554 and 0.600."""
+CONTRACTION_BAA_THRESHOLD: float = 3.0
+"""BAA10Y spread (pp) above which the Contraction credit arm fires.
+Replaces the NFCICREDIT threshold: NFCICREDIT is backfilled pre-2010
+(constructed ~2010) so using it in labeling rules injects look-ahead
+bias into ground truth. BAA10Y is market-observed, never restated,
+honest back to 1986. 3.0 verified over 2000-2024: recessions reach
+3.42 (2001) / 6.10 (2008) / 3.93 (2020); calm years and all three
+late-cycle periods stay below 3.0. Note: non-recession stress episodes
+(2011 euro crisis max 3.30, 2015-16 HY selloff max 3.55) also exceed
+3.0 — they are correctly excluded from Contraction because the
+unemployment-spike gate (unrate_3mo_change) was not firing then."""
 
 CONTRACTION_UNRATE_ELEVATION: float = 1.5
 """Unemployment above 12-month minimum (pp) at which Contraction
@@ -62,7 +68,7 @@ Recovery's 24-month) detects new shocks against the recent floor.
 
 This OR-clause exists so Contraction stays labeled through a
 high-unemployment plateau after credit has stabilized — e.g.,
-May-June 2020 when COVID unemployment was 11-13% but NFCICREDIT
+May-June 2020 when COVID unemployment was 11-13% but BAA10Y
 had already declined below the stress threshold."""
 
 # -- Recovery --
@@ -101,14 +107,14 @@ era — unemployment had drifted 0.5-0.7pp off the Apr 2023 cycle
 low, which is "labor market basically OK, past peak" rather than
 "unemployment elevated"."""
 
-LATE_CYCLE_NFCI_MAX: float = 0.5
-"""NFCICREDIT level below which Late-cycle fires. Matches
-CONTRACTION_NFCI_THRESHOLD — the same NFCICREDIT boundary
-separates 'credit normal' from 'credit stressed' in both
-directions of the rule cascade."""
+LATE_CYCLE_BAA_MAX: float = 3.0
+"""BAA10Y spread (pp) below which credit reads as calm for the
+Late-cycle rule. Same 3.0 boundary as CONTRACTION_BAA_THRESHOLD —
+credit is stressed above, calm below. Verified: every month of the
+2006-07, 2018-19, and 2022-24 late-cycle periods is below 3.0."""
 
 
-_REQUIRED_COLUMNS: tuple[str, ...] = ("UNRATE", "T10Y3M", "NFCICREDIT")
+_REQUIRED_COLUMNS: tuple[str, ...] = ("UNRATE", "T10Y3M", "BAA10Y")
 
 
 def compute_labels(features_df: pd.DataFrame) -> pd.Series:
@@ -117,7 +123,7 @@ def compute_labels(features_df: pd.DataFrame) -> pd.Series:
     Args:
         features_df: FRED feature matrix as returned by
             `get_features_matrix(...)`. Must contain UNRATE, T10Y3M,
-            and NFCICREDIT columns. Index must be a DatetimeIndex.
+            and BAA10Y columns. Index must be a DatetimeIndex.
             Other columns (DGS10, FEDFUNDS, etc.) are ignored.
 
     Returns:
@@ -161,7 +167,7 @@ def _derive_label_features(matrix: pd.DataFrame) -> pd.DataFrame:
     df["unrate_24mo_min"] = df["unrate"].rolling(window=24, min_periods=1).min()
     df["unrate_above_24mo_min"] = df["unrate"] - df["unrate_24mo_min"]
     df["t10y3m"] = matrix["T10Y3M"]
-    df["nfcicredit"] = matrix["NFCICREDIT"]
+    df["baa10y"] = matrix["BAA10Y"]
     return df
 
 
@@ -281,7 +287,7 @@ def _label_row(row: pd.Series) -> str:
     # 1. Contraction: 3-month unemployment spike combined with EITHER
     #    credit stress OR elevated unemployment level.
     if row["unrate_3mo_change"] > CONTRACTION_UNRATE_3MO_CHANGE_MIN and (
-        row["nfcicredit"] > CONTRACTION_NFCI_THRESHOLD
+        row["baa10y"] > CONTRACTION_BAA_THRESHOLD
         or row["unrate"]
         > row["unrate_12mo_min"] + CONTRACTION_UNRATE_ELEVATION
     ):
@@ -300,7 +306,7 @@ def _label_row(row: pd.Series) -> str:
     if (
         row["t10y3m"] < LATE_CYCLE_T10Y3M_MAX
         and row["unrate_above_24mo_min"] < LATE_CYCLE_UNRATE_ABOVE_MIN_MAX
-        and row["nfcicredit"] < LATE_CYCLE_NFCI_MAX
+        and row["baa10y"] < LATE_CYCLE_BAA_MAX
     ):
         return "Late-cycle"
 
