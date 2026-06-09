@@ -420,6 +420,34 @@ def run_walk_forward(
         X_test = features.iloc[test_valid]
         y_test = targets.iloc[test_valid]
 
+        # Impute feature NaNs (e.g. series that start after fold train_start)
+        # using training-fold means only — never full-matrix or test statistics.
+        train_means = X_train.mean()
+        all_nan_cols = train_means.index[train_means.isna()].tolist()
+        if all_nan_cols:
+            logger.warning(
+                "Fold %d: column(s) %s are ALL-NaN in the training window "
+                "— dropping from both train and test for this fold.",
+                fold.fold_id, all_nan_cols,
+            )
+            X_train = X_train.drop(columns=all_nan_cols)
+            X_test = X_test.drop(columns=all_nan_cols)
+            train_means = train_means.drop(labels=all_nan_cols)
+
+        imputed_cols = sorted(
+            set(X_train.columns[X_train.isna().any()].tolist())
+            | set(X_test.columns[X_test.isna().any()].tolist())
+        )
+        n_nan_cells = int(X_train.isna().sum().sum() + X_test.isna().sum().sum())
+        X_train = X_train.fillna(train_means)
+        X_test = X_test.fillna(train_means)
+        if imputed_cols:
+            logger.info(
+                "Fold %d: imputed %d NaN cell(s) across column(s) %s "
+                "with training-fold mean.",
+                fold.fold_id, n_nan_cells, imputed_cols,
+            )
+
         lr = RegimeClassifier(model_type="logistic").fit(X_train, y_train)
         xgb = RegimeClassifier(model_type="xgboost").fit(X_train, y_train)
 

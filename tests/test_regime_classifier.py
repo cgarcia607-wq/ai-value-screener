@@ -8,10 +8,12 @@ artifact layout, adoption-decision logic).
 
 from __future__ import annotations
 
+import logging
 import numpy as np
 import pandas as pd
 import pytest
 
+import src.models.regime_classifier as _rcmod
 from src.feature_engineering.regime_labels import REGIMES, compute_labels
 from src.models.regime_classifier import (
     LABEL_HORIZON_MONTHS,
@@ -145,6 +147,9 @@ def _make_synthetic_regime_features(
             "UNRATE": unrate,
             "T10Y3M": t10y3m,
             "NFCICREDIT": nfcicredit,
+            # BAA10Y ≈ 2.0 — well below the 3.0 Contraction/Late-cycle threshold
+            # so the synthetic series stays in Expansion/Late-cycle territory.
+            "BAA10Y": 2.0 + rng.normal(0, 0.05, n_months),
             "DGS10": 2.5 + rng.normal(0, 0.1, n_months),
             "FEDFUNDS": 1.5 + rng.normal(0, 0.1, n_months),
         },
@@ -275,3 +280,115 @@ def test_adoption_decision_picks_xgboost_on_clear_win():
 
     assert decision["winner"] == "xgboost"
     assert decision["xgb_macro_f1"] - decision["lr_macro_f1"] == pytest.approx(0.05)
+
+
+# ---------------------------------------------------------------------------
+# NaN imputation in run_walk_forward
+# ---------------------------------------------------------------------------
+
+
+def test_walk_forward_imputes_nan_with_train_fold_mean(tmp_path, monkeypatch):
+    """Column with NaN in its head rows is filled with the training-fold mean.
+
+    LATE_COL is constructed so:
+      - train-fold mean (rows 24..35 ≈ 1.0, row 23 is NaN)  ≈ 1.0
+      - full-matrix mean (rows 24..35 ≈ 1.0 plus rows 36..71 ≈ 100.0) ≈ 75.0
+
+    The two differ by >10, so the assertion is non-vacuous.
+    """
+    n = 72
+    features = _make_synthetic_regime_features(n_months=n, switch_at=24)
+
+    rng = np.random.default_rng(99)
+    late_col = np.full(n, np.nan)
+    late_col[24:36] = rng.normal(1.0, 0.001, 12)    # non-NaN only in training fold
+    late_col[36:] = rng.normal(100.0, 0.001, n - 36)
+    features = features.copy()
+    features["LATE_COL"] = late_col
+
+    captured_X_train: list[pd.DataFrame] = []
+    original_fit = RegimeClassifier.fit
+
+    def capturing_fit(self, X, y):
+        captured_X_train.append(X.copy())
+        return original_fit(self, X, y)
+
+    monkeypatch.setattr(RegimeClassifier, "fit", capturing_fit)
+
+    cv = WalkForwardCV(train_period=36, test_period=12, embargo=3, step=12)
+    run_walk_forward(cv=cv, features=features, output_dir=tmp_path)
+
+    assert captured_X_train, "RegimeClassifier.fit was never called"
+    X_first = captured_X_train[0]   # fold 0, logistic
+
+    # No NaN must reach the classifier.
+    assert not X_first.isna().any().any(), "NaN reached the classifier after imputation"
+
+    # Identify which rows in the fold's training slice had NaN in LATE_COL
+    # before imputation (using the original features as the reference).
+    original_late_col_in_fold = features.loc[X_first.index, "LATE_COL"]
+    nan_mask = original_late_col_in_fold.isna()
+    assert nan_mask.any(), (
+        "Test precondition: at least one training-fold row must be NaN in LATE_COL"
+    )
+
+    # Train-fold mean = mean of the non-NaN training rows.
+    expected_train_mean = float(original_late_col_in_fold.mean())  # pandas skips NaN
+    full_matrix_mean = float(features["LATE_COL"].mean())
+    assert abs(full_matrix_mean - expected_train_mean) > 10, (
+        "Test precondition: train-fold mean and full-matrix mean must differ by >10"
+    )
+
+    # Every cell that was NaN before imputation must now equal the train-fold mean.
+    np.testing.assert_allclose(
+        X_first.loc[nan_mask, "LATE_COL"].to_numpy(),
+        np.full(nan_mask.sum(), expected_train_mean),
+        atol=1e-9,
+    )
+
+
+def test_walk_forward_drops_all_nan_train_column(tmp_path, monkeypatch, caplog):
+    """Column entirely NaN within the training window is dropped from both
+    train and test matrices, and a WARNING naming the column is logged.
+
+    GHOST_COL is all-NaN for every month so every fold's training window
+    has zero usable signal — it must be absent from X_train on every .fit()
+    call and a WARNING must be emitted.  If GHOST_COL were left in X_test
+    but absent from X_train, sklearn raises a feature-count mismatch on
+    predict — so run_walk_forward completing without error also proves it
+    was dropped from X_test.
+    """
+    n = 72
+    features = _make_synthetic_regime_features(n_months=n, switch_at=24)
+
+    features = features.copy()
+    features["GHOST_COL"] = np.nan   # all-NaN in every fold's training window
+
+    captured_X_train: list[pd.DataFrame] = []
+    original_fit = RegimeClassifier.fit
+
+    def capturing_fit(self, X, y):
+        captured_X_train.append(X.copy())
+        return original_fit(self, X, y)
+
+    monkeypatch.setattr(RegimeClassifier, "fit", capturing_fit)
+
+    cv = WalkForwardCV(train_period=36, test_period=12, embargo=3, step=12)
+    with caplog.at_level(logging.WARNING, logger="src.models.regime_classifier"):
+        run_walk_forward(cv=cv, features=features, output_dir=tmp_path)
+
+    assert captured_X_train, "RegimeClassifier.fit was never called"
+
+    # GHOST_COL must be absent from every X_train passed to .fit().
+    for i, X in enumerate(captured_X_train):
+        assert "GHOST_COL" not in X.columns, (
+            f"GHOST_COL was not dropped from X_train (captured call #{i})"
+        )
+
+    # At least one WARNING must name GHOST_COL.
+    warning_messages = [
+        r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+    ]
+    assert any("GHOST_COL" in msg for msg in warning_messages), (
+        f"Expected WARNING mentioning GHOST_COL; captured warnings: {warning_messages}"
+    )
