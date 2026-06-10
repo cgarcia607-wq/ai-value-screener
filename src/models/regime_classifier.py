@@ -20,7 +20,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 import joblib
 import numpy as np
@@ -341,6 +341,7 @@ def run_walk_forward(
     cv: WalkForwardCV,
     features: pd.DataFrame,
     output_dir: Path,
+    feature_builder: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> dict:
     """Walk-forward training orchestrator for the regime classifier.
 
@@ -387,6 +388,9 @@ def run_walk_forward(
     run_dir = Path(output_dir) / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
     logger.info("run_walk_forward: writing artifacts to %s", run_dir)
+
+    if feature_builder is not None:
+        features = feature_builder(features)
 
     targets = _build_t_plus_3_targets(features)
 
