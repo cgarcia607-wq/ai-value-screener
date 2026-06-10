@@ -65,25 +65,3 @@ models is at or below the persistence frontier on this data.
 Note: XGBoost averaged 0.6758 (> LR's 0.6415) but below the +0.05
 adoption bar, and still below persistence — the verdict is unchanged
 under either model.
-
----
-
-## RESULT (2026-06-09, run 20260609_202535)
-
-v2 LR per-fold macro-F1: [0.20, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 0.45, 0.14, 0.00, 0.26, 0.52, 1.00, 0.40]
-
-- v2 LR average:           **0.6415** (required > 0.7575) — FAIL
-- v2 LR transition (8-11): **0.2315** (required > 0.5231) — FAIL
-
-**VERDICT: FAILURE.** Stopping rule binds: ship the rules-based nowcaster
-as the product; report the forecaster as a negative result; no v3.
-
-Falsifier not triggered (0.2315 vs v1's 0.159 exceeds ±0.05): momentum
-features carry some T+3 signal, but not enough to beat naive persistence
-even with the current-regime prior provided as a feature. Conclusion:
-T+3 regime-turn prediction from monthly macro aggregates with linear
-models is at or below the persistence frontier on this data.
-
-Note: XGBoost averaged 0.6758 (> LR's 0.6415) but below the +0.05
-adoption bar, and still below persistence — the verdict is unchanged
-under either model.
