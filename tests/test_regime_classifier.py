@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import src.models.regime_classifier as _rcmod
 from src.feature_engineering.regime_labels import REGIMES, compute_labels
 from src.models.regime_classifier import (
     LABEL_HORIZON_MONTHS,
